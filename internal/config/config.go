@@ -27,7 +27,7 @@ func Load() Config {
 		MySQLPort:     getEnv("MYSQL_PORT", "3306"),
 		MySQLDatabase: getEnv("MYSQL_DATABASE", "microservice_demo"),
 		MySQLUser:     getEnv("MYSQL_USER", "demo"),
-		MySQLPassword: getEnv("MYSQL_PASSWORD", "demo_password"),
+		MySQLPassword: getEnv("MYSQL_PASSWORD", "123456"),
 		RedisHost:     getEnv("REDIS_HOST", "127.0.0.1"),
 		RedisPort:     getEnv("REDIS_PORT", "6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
