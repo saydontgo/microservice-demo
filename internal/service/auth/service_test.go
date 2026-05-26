@@ -103,3 +103,23 @@ func TestServiceLogin_BitsUT(t *testing.T) {
 		}
 	})
 }
+
+func TestServiceVerifyToken_BitsUT(t *testing.T) {
+	svc := NewService(&fakeRepo{}, "salt", "secret", time.Hour)
+	svc.now = func() time.Time {
+		return time.Unix(100, 0)
+	}
+	token, err := svc.signToken(auth.User{ID: 1001, Role: auth.RoleBuyer})
+	if err != nil {
+		t.Fatalf("signToken() error = %v", err)
+	}
+
+	got, err := svc.VerifyToken(context.Background(), token)
+
+	if err != nil {
+		t.Fatalf("VerifyToken() error = %v", err)
+	}
+	if got.ID != 1001 || got.Role != auth.RoleBuyer {
+		t.Fatalf("VerifyToken() = %+v", got)
+	}
+}

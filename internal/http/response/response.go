@@ -3,9 +3,9 @@ package response
 import (
 	"encoding/json"
 	"net/http"
-
-	"microservice-demo/internal/http/middleware"
 )
+
+const requestIDHeader = "X-Request-Id"
 
 type Body struct {
 	Data      any    `json:"data,omitempty"`
@@ -34,9 +34,9 @@ func Error(w http.ResponseWriter, r *http.Request, statusCode int, code, message
 }
 
 func requestID(w http.ResponseWriter, r *http.Request) string {
-	requestID := w.Header().Get(middleware.RequestIDHeader)
+	requestID := w.Header().Get(requestIDHeader)
 	if requestID != "" {
 		return requestID
 	}
-	return r.Header.Get(middleware.RequestIDHeader)
+	return r.Header.Get(requestIDHeader)
 }

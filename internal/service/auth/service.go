@@ -23,6 +23,7 @@ var (
 	ErrInvalidCredential = errors.New("invalid credential")
 	ErrRoleMismatch      = errors.New("role mismatch")
 	ErrUserDisabled      = errors.New("user disabled")
+	ErrInvalidToken      = errors.New("invalid token")
 )
 
 type Repository interface {
@@ -146,6 +147,34 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginOutput, err
 		return LoginOutput{}, err
 	}
 	return LoginOutput{Token: token, ExpiresIn: int64(s.tokenTTL.Seconds()), Role: user.Role}, nil
+}
+
+func (s *Service) VerifyToken(ctx context.Context, token string) (auth.CurrentUser, error) {
+	_ = ctx
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return auth.CurrentUser{}, ErrInvalidToken
+	}
+	mac := hmac.New(sha256.New, []byte(s.tokenKey))
+	_, _ = mac.Write([]byte(parts[0]))
+	expected := mac.Sum(nil)
+	actual, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !hmac.Equal(actual, expected) {
+		return auth.CurrentUser{}, ErrInvalidToken
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return auth.CurrentUser{}, ErrInvalidToken
+	}
+	var payload tokenPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return auth.CurrentUser{}, ErrInvalidToken
+	}
+	if payload.ExpiresAt <= s.now().Unix() || !validRole(payload.Role) {
+		return auth.CurrentUser{}, ErrInvalidToken
+	}
+	return auth.CurrentUser{ID: payload.UserID, Role: payload.Role}, nil
 }
 
 func (s *Service) hashPassword(password string) string {

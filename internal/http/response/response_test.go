@@ -5,14 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"microservice-demo/internal/http/middleware"
 )
 
 func TestJSON_BitsUT(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
-	rec.Header().Set(middleware.RequestIDHeader, "req-1")
+	rec.Header().Set(requestIDHeader, "req-1")
 
 	JSON(rec, req, http.StatusOK, map[string]string{"status": "ok"})
 
@@ -28,7 +26,7 @@ func TestJSON_BitsUT(t *testing.T) {
 func TestError_BitsUT(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
-	rec.Header().Set(middleware.RequestIDHeader, "req-1")
+	rec.Header().Set(requestIDHeader, "req-1")
 
 	Error(rec, req, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "dependency unavailable")
 
