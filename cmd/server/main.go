@@ -8,8 +8,11 @@ import (
 
 	"microservice-demo/internal/config"
 	httpserver "microservice-demo/internal/http"
+	"microservice-demo/internal/http/handler"
 	"microservice-demo/internal/infra/mysql"
 	redisinfra "microservice-demo/internal/infra/redis"
+	"microservice-demo/internal/repository"
+	authsvc "microservice-demo/internal/service/auth"
 )
 
 func main() {
@@ -24,9 +27,13 @@ func main() {
 	rdb := redisinfra.NewClient(cfg.RedisOptions())
 	defer rdb.Close()
 
+	authRepo := repository.NewAuthRepository(db)
+	authService := authsvc.NewService(authRepo, cfg.PasswordSalt, cfg.TokenSecret, cfg.TokenTTL)
+	authHandler := handler.NewAuthHandler(authService)
+
 	server := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
-		Handler:      httpserver.NewRouter(db, rdb),
+		Handler:      httpserver.NewRouterWithAuth(db, rdb, authHandler),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,

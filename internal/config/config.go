@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -18,6 +20,9 @@ type Config struct {
 	RedisPort     string
 	RedisPassword string
 	RedisDB       int
+	PasswordSalt  string
+	TokenSecret   string
+	TokenTTL      time.Duration
 }
 
 func Load() Config {
@@ -32,6 +37,9 @@ func Load() Config {
 		RedisPort:     getEnv("REDIS_PORT", "6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 		RedisDB:       0,
+		PasswordSalt:  getEnv("PASSWORD_SALT", "microservice-demo"),
+		TokenSecret:   getEnv("TOKEN_SECRET", "microservice-demo-token"),
+		TokenTTL:      time.Duration(getEnvInt("TOKEN_TTL_SECONDS", 7200)) * time.Second,
 	}
 }
 
@@ -53,4 +61,16 @@ func getEnv(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func getEnvInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
