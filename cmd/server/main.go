@@ -13,6 +13,7 @@ import (
 	redisinfra "microservice-demo/internal/infra/redis"
 	"microservice-demo/internal/repository"
 	authsvc "microservice-demo/internal/service/auth"
+	productsvc "microservice-demo/internal/service/product"
 	usersvc "microservice-demo/internal/service/user"
 )
 
@@ -34,10 +35,13 @@ func main() {
 	userRepo := repository.NewUserRepository(db)
 	userService := usersvc.NewService(userRepo)
 	userHandler := handler.NewUserHandler(userService)
+	productRepo := repository.NewProductRepository(db)
+	productService := productsvc.NewService(productRepo)
+	productHandler := handler.NewProductHandler(productService)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
-		Handler:      httpserver.NewRouterWithServices(db, rdb, authHandler, userHandler, authService),
+		Handler:      httpserver.NewRouterWithServices(db, rdb, authHandler, userHandler, productHandler, authService),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
