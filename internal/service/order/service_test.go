@@ -12,6 +12,7 @@ import (
 
 type fakeRepo struct {
 	createIn repository.CreateOrderParams
+	statuses []int
 	orders   []repository.Order
 	err      error
 }
@@ -22,6 +23,7 @@ func (r *fakeRepo) CreateOrder(_ context.Context, params repository.CreateOrderP
 }
 
 func (r *fakeRepo) ListBuyerOrders(_ context.Context, buyerID int64, statuses []int, limit, offset int) ([]repository.Order, error) {
+	r.statuses = statuses
 	return r.orders, r.err
 }
 
@@ -81,13 +83,30 @@ func TestServiceListBuyerOrders_BitsUT(t *testing.T) {
 	svc := NewService(repo)
 	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
 
-	got, err := svc.ListBuyerOrders(ctx, 1, 20)
+	got, err := svc.ListBuyerOrders(ctx, 1, 20, nil)
 
 	if err != nil {
 		t.Fatalf("ListBuyerOrders() error = %v", err)
 	}
 	if len(got) != 1 || got[0].StatusName != "SHIPPING" || got[0].CreatedAt == "" {
 		t.Fatalf("ListBuyerOrders() = %+v", got)
+	}
+	if len(repo.statuses) != 2 || repo.statuses[0] != orderdomain.StatusPlacedUnshipped || repo.statuses[1] != orderdomain.StatusShipping {
+		t.Fatalf("statuses = %+v", repo.statuses)
+	}
+}
+
+func TestServiceListBuyerOrdersWithStatus_BitsUT(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewService(repo)
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
+	status := orderdomain.StatusReceived
+
+	if _, err := svc.ListBuyerOrders(ctx, 1, 20, &status); err != nil {
+		t.Fatalf("ListBuyerOrders() error = %v", err)
+	}
+	if len(repo.statuses) != 1 || repo.statuses[0] != orderdomain.StatusReceived {
+		t.Fatalf("statuses = %+v", repo.statuses)
 	}
 }
 

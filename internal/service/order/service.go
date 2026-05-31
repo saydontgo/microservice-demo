@@ -99,7 +99,7 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Crea
 	return CreateOrderOutput{OrderID: orderID, Status: orderdomain.StatusPlacedUnshipped, BalanceCent: balance}, nil
 }
 
-func (s *Service) ListBuyerOrders(ctx context.Context, page, pageSize int) ([]OrderOutput, error) {
+func (s *Service) ListBuyerOrders(ctx context.Context, page, pageSize int, status *int) ([]OrderOutput, error) {
 	user, err := currentUser(ctx, auth.RoleBuyer)
 	if err != nil {
 		return nil, err
@@ -107,7 +107,14 @@ func (s *Service) ListBuyerOrders(ctx context.Context, page, pageSize int) ([]Or
 	if page <= 0 || pageSize <= 0 || pageSize > 100 {
 		return nil, ErrInvalidArgument
 	}
-	items, err := s.repo.ListBuyerOrders(ctx, user.ID, []int{orderdomain.StatusPlacedUnshipped, orderdomain.StatusShipping}, pageSize, (page-1)*pageSize)
+	statuses := []int{orderdomain.StatusPlacedUnshipped, orderdomain.StatusShipping}
+	if status != nil {
+		if !validOrderStatus(*status) {
+			return nil, ErrInvalidArgument
+		}
+		statuses = []int{*status}
+	}
+	items, err := s.repo.ListBuyerOrders(ctx, user.ID, statuses, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -185,4 +192,11 @@ func currentUser(ctx context.Context, role string) (auth.CurrentUser, error) {
 		return auth.CurrentUser{}, ErrUnauthenticated
 	}
 	return user, nil
+}
+
+func validOrderStatus(status int) bool {
+	return status == orderdomain.StatusPlacedUnshipped ||
+		status == orderdomain.StatusShipping ||
+		status == orderdomain.StatusReceived ||
+		status == orderdomain.StatusRefunded
 }

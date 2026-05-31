@@ -131,13 +131,26 @@ ON DUPLICATE KEY UPDATE deal_amount_cent = deal_amount_cent + VALUES(deal_amount
 }
 
 func (r *OrderRepository) ListBuyerOrders(ctx context.Context, buyerID int64, statuses []int, limit, offset int) ([]Order, error) {
-	query := `
+	if len(statuses) == 1 {
+		const query = `
+SELECT id, product_id, product_name_snapshot, quantity, total_amount_cent, refund_amount_cent, status, created_at, shipped_at
+FROM orders
+WHERE buyer_id = ? AND status = ?
+ORDER BY created_at DESC
+LIMIT ? OFFSET ?`
+		return r.queryBuyerOrders(ctx, query, buyerID, statuses[0], limit, offset)
+	}
+	const query = `
 SELECT id, product_id, product_name_snapshot, quantity, total_amount_cent, refund_amount_cent, status, created_at, shipped_at
 FROM orders
 WHERE buyer_id = ? AND status IN (?, ?)
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?`
-	rows, err := r.db.QueryContext(ctx, query, buyerID, statuses[0], statuses[1], limit, offset)
+	return r.queryBuyerOrders(ctx, query, buyerID, statuses[0], statuses[1], limit, offset)
+}
+
+func (r *OrderRepository) queryBuyerOrders(ctx context.Context, query string, args ...any) ([]Order, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -54,3 +54,18 @@ func TestAuthHandlerLogin_BitsUT(t *testing.T) {
 		}
 	})
 }
+
+func TestAuthHandlerLogout_BitsUT(t *testing.T) {
+	h := NewAuthHandler(fakeAuthService{})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	rec := httptest.NewRecorder()
+
+	h.Logout(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"success":true`) {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}

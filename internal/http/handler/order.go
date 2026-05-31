@@ -12,7 +12,7 @@ import (
 
 type OrderService interface {
 	CreateOrder(ctx context.Context, input ordersvc.CreateOrderInput) (ordersvc.CreateOrderOutput, error)
-	ListBuyerOrders(ctx context.Context, page, pageSize int) ([]ordersvc.OrderOutput, error)
+	ListBuyerOrders(ctx context.Context, page, pageSize int, status *int) ([]ordersvc.OrderOutput, error)
 	RefundOrder(ctx context.Context, orderID int64, idempotencyKey string) (ordersvc.RefundOutput, error)
 	ReceiveOrder(ctx context.Context, orderID int64) error
 	ShipProductOrders(ctx context.Context, productID int64) (ordersvc.ShipOutput, error)
@@ -46,7 +46,7 @@ func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *OrderHandler) ListBuyerOrders(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.ListBuyerOrders(r.Context(), queryInt(r, "page", 1), queryInt(r, "pageSize", 20))
+	items, err := h.service.ListBuyerOrders(r.Context(), queryInt(r, "page", 1), queryInt(r, "pageSize", 20), queryOptionalInt(r, "status"))
 	if err != nil {
 		writeOrderError(w, r, err)
 		return

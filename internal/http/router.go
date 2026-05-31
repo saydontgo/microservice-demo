@@ -38,6 +38,9 @@ func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandl
 	mux.Handle("POST /api/buyer/orders/{orderId}/refund", buyerAuth(http.HandlerFunc(orderHandler.RefundOrder)))
 	mux.Handle("POST /api/buyer/orders/{orderId}/receive", buyerAuth(http.HandlerFunc(orderHandler.ReceiveOrder)))
 
+	anyAuth := middleware.Auth(verifier)
+	mux.Handle("POST /api/auth/logout", anyAuth(http.HandlerFunc(authHandler.Logout)))
+
 	sellerAuth := middleware.Auth(verifier, auth.RoleSeller)
 	mux.Handle("GET /api/seller/profile", sellerAuth(http.HandlerFunc(userHandler.GetSellerProfile)))
 	mux.Handle("PUT /api/seller/profile", sellerAuth(http.HandlerFunc(userHandler.UpdateSellerProfile)))

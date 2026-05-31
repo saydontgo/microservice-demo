@@ -85,6 +85,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, output)
 }
 
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	response.JSON(w, r, http.StatusOK, map[string]bool{"success": true})
+}
+
 func writeAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, authsvc.ErrInvalidArgument):
