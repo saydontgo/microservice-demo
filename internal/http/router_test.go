@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"microservice-demo/internal/http/middleware"
@@ -28,5 +29,26 @@ func TestNewRouter_BitsUT(t *testing.T) {
 	}
 	if rec.Header().Get(middleware.RequestIDHeader) != "req-router" {
 		t.Fatalf("request id = %q, want req-router", rec.Header().Get(middleware.RequestIDHeader))
+	}
+}
+
+func TestNewRouterWeb_BitsUT(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir("../.."); err != nil {
+		t.Fatalf("chdir project root: %v", err)
+	}
+	defer os.Chdir(wd)
+
+	router := NewRouter(fakePinger{}, fakePinger{})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
 	}
 }

@@ -11,6 +11,7 @@ import (
 func NewRouter(mysql handler.Pinger, redis handler.Pinger) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /health", handler.NewHealthHandler(mysql, redis))
+	registerWebRoutes(mux)
 	return middleware.RequestID(mux)
 }
 
@@ -19,6 +20,7 @@ func NewRouterWithAuth(mysql handler.Pinger, redis handler.Pinger, authHandler *
 	mux.Handle("GET /health", handler.NewHealthHandler(mysql, redis))
 	mux.HandleFunc("POST /api/auth/register", authHandler.Register)
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
+	registerWebRoutes(mux)
 	return middleware.RequestID(mux)
 }
 
@@ -52,5 +54,10 @@ func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandl
 	mux.Handle("POST /api/seller/products/{productId}/delist", sellerAuth(http.HandlerFunc(productHandler.DelistProduct)))
 	mux.Handle("GET /api/seller/trends", sellerAuth(http.HandlerFunc(productHandler.ListSellerTrend)))
 
+	registerWebRoutes(mux)
 	return middleware.RequestID(mux)
+}
+
+func registerWebRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /", http.FileServer(http.Dir("web")))
 }
