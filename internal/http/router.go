@@ -35,6 +35,8 @@ func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandl
 	mux.Handle("GET /api/buyer/products", buyerAuth(http.HandlerFunc(productHandler.SearchBuyerProducts)))
 	mux.Handle("POST /api/buyer/orders", buyerAuth(http.HandlerFunc(orderHandler.CreateOrder)))
 	mux.Handle("GET /api/buyer/orders", buyerAuth(http.HandlerFunc(orderHandler.ListBuyerOrders)))
+	mux.Handle("POST /api/buyer/orders/{orderId}/refund", buyerAuth(http.HandlerFunc(orderHandler.RefundOrder)))
+	mux.Handle("POST /api/buyer/orders/{orderId}/receive", buyerAuth(http.HandlerFunc(orderHandler.ReceiveOrder)))
 
 	sellerAuth := middleware.Auth(verifier, auth.RoleSeller)
 	mux.Handle("GET /api/seller/profile", sellerAuth(http.HandlerFunc(userHandler.GetSellerProfile)))
@@ -42,6 +44,7 @@ func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandl
 	mux.Handle("POST /api/seller/products", sellerAuth(http.HandlerFunc(productHandler.CreateProduct)))
 	mux.Handle("PUT /api/seller/products/{productId}", sellerAuth(http.HandlerFunc(productHandler.UpdateProduct)))
 	mux.Handle("POST /api/seller/products/{productId}/inventory/add", sellerAuth(http.HandlerFunc(productHandler.AddInventory)))
+	mux.Handle("POST /api/seller/products/{productId}/ship-all", sellerAuth(http.HandlerFunc(orderHandler.ShipProductOrders)))
 
 	return middleware.RequestID(mux)
 }

@@ -13,6 +13,9 @@ import (
 type OrderService interface {
 	CreateOrder(ctx context.Context, input ordersvc.CreateOrderInput) (ordersvc.CreateOrderOutput, error)
 	ListBuyerOrders(ctx context.Context, page, pageSize int) ([]ordersvc.OrderOutput, error)
+	RefundOrder(ctx context.Context, orderID int64, idempotencyKey string) (ordersvc.RefundOutput, error)
+	ReceiveOrder(ctx context.Context, orderID int64) error
+	ShipProductOrders(ctx context.Context, productID int64) (ordersvc.ShipOutput, error)
 }
 
 type OrderHandler struct {
@@ -51,6 +54,47 @@ func (h *OrderHandler) ListBuyerOrders(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
 }
 
+func (h *OrderHandler) RefundOrder(w http.ResponseWriter, r *http.Request) {
+	orderID, ok := pathInt64(r, "orderId")
+	if !ok {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "订单 ID 不合法")
+		return
+	}
+	output, err := h.service.RefundOrder(r.Context(), orderID, r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeOrderError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, output)
+}
+
+func (h *OrderHandler) ReceiveOrder(w http.ResponseWriter, r *http.Request) {
+	orderID, ok := pathInt64(r, "orderId")
+	if !ok {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "订单 ID 不合法")
+		return
+	}
+	if err := h.service.ReceiveOrder(r.Context(), orderID); err != nil {
+		writeOrderError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (h *OrderHandler) ShipProductOrders(w http.ResponseWriter, r *http.Request) {
+	productID, ok := pathInt64(r, "productId")
+	if !ok {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "商品 ID 不合法")
+		return
+	}
+	output, err := h.service.ShipProductOrders(r.Context(), productID)
+	if err != nil {
+		writeOrderError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, output)
+}
+
 func writeOrderError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ordersvc.ErrInvalidArgument):
@@ -63,6 +107,8 @@ func writeOrderError(w http.ResponseWriter, r *http.Request, err error) {
 		response.Error(w, r, http.StatusConflict, "INVENTORY_NOT_ENOUGH", "库存不足")
 	case errors.Is(err, ordersvc.ErrProductNotBuyable):
 		response.Error(w, r, http.StatusConflict, "PRODUCT_NOT_BUYABLE", "商品不可购买")
+	case errors.Is(err, ordersvc.ErrOrderStatusInvalid):
+		response.Error(w, r, http.StatusConflict, "ORDER_STATUS_INVALID", "订单状态不允许操作")
 	default:
 		response.Error(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误")
 	}

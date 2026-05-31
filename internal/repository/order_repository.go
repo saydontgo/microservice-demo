@@ -153,3 +153,178 @@ LIMIT ? OFFSET ?`
 	}
 	return orders, rows.Err()
 }
+
+func (r *OrderRepository) RefundOrder(ctx context.Context, buyerID, orderID int64, idempotencyKey string) (int64, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var sellerID int64
+	var productID int64
+	var quantity int
+	var amountCent int64
+	var status int
+	const orderQuery = `
+SELECT seller_id, product_id, quantity, total_amount_cent, status
+FROM orders
+WHERE id = ? AND buyer_id = ?
+FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, orderQuery, orderID, buyerID).Scan(&sellerID, &productID, &quantity, &amountCent, &status); err != nil {
+		return 0, err
+	}
+	if status != orderdomain.StatusPlacedUnshipped {
+		return 0, ErrOrderStatusInvalid
+	}
+
+	const insertRefund = `
+INSERT INTO payment_transactions (user_id, order_id, type, amount_cent, status, idempotency_key)
+VALUES (?, ?, 3, ?, 2, ?)`
+	if _, err := tx.ExecContext(ctx, insertRefund, buyerID, orderID, amountCent, idempotencyKey); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE buyer_profiles SET balance_cent = balance_cent + ? WHERE user_id = ?`, amountCent, buyerID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE seller_profiles SET total_deal_amount_cent = total_deal_amount_cent - ? WHERE user_id = ?`, amountCent, sellerID); err != nil {
+		return 0, err
+	}
+
+	var reserved int
+	if err := tx.QueryRowContext(ctx, `SELECT reserved_quantity FROM product_inventory WHERE product_id = ? FOR UPDATE`, productID).Scan(&reserved); err != nil {
+		return 0, err
+	}
+	if reserved >= quantity {
+		const restoreInventory = `
+UPDATE product_inventory
+SET available_quantity = available_quantity + ?, reserved_quantity = reserved_quantity - ?
+WHERE product_id = ?`
+		if _, err := tx.ExecContext(ctx, restoreInventory, quantity, quantity, productID); err != nil {
+			return 0, err
+		}
+	}
+
+	const updateOrder = `
+UPDATE orders
+SET status = ?, refund_amount_cent = total_amount_cent, refunded_at = CURRENT_TIMESTAMP(3)
+WHERE id = ?`
+	if _, err := tx.ExecContext(ctx, updateOrder, orderdomain.StatusRefunded, orderID); err != nil {
+		return 0, err
+	}
+
+	bizDate := time.Now().Format("2006-01-02")
+	const upsertProductStats = `
+INSERT INTO product_daily_stats (biz_date, product_id, seller_id, refund_amount_cent, refund_order_count)
+VALUES (?, ?, ?, ?, 1)
+ON DUPLICATE KEY UPDATE refund_amount_cent = refund_amount_cent + VALUES(refund_amount_cent), refund_order_count = refund_order_count + 1`
+	if _, err := tx.ExecContext(ctx, upsertProductStats, bizDate, productID, sellerID, amountCent); err != nil {
+		return 0, err
+	}
+	const upsertSellerStats = `
+INSERT INTO seller_daily_stats (biz_date, seller_id, refund_amount_cent, refund_order_count)
+VALUES (?, ?, ?, 1)
+ON DUPLICATE KEY UPDATE refund_amount_cent = refund_amount_cent + VALUES(refund_amount_cent), refund_order_count = refund_order_count + 1`
+	if _, err := tx.ExecContext(ctx, upsertSellerStats, bizDate, sellerID, amountCent); err != nil {
+		return 0, err
+	}
+
+	var balance int64
+	if err := tx.QueryRowContext(ctx, `SELECT balance_cent FROM buyer_profiles WHERE user_id = ?`, buyerID).Scan(&balance); err != nil {
+		return 0, err
+	}
+	return balance, tx.Commit()
+}
+
+func (r *OrderRepository) ReceiveOrder(ctx context.Context, buyerID, orderID int64) error {
+	const query = `
+UPDATE orders
+SET status = ?, is_deal_completed = 1, received_at = CURRENT_TIMESTAMP(3)
+WHERE id = ? AND buyer_id = ? AND status = ?`
+	result, err := r.db.ExecContext(ctx, query, orderdomain.StatusReceived, orderID, buyerID, orderdomain.StatusShipping)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrOrderStatusInvalid
+	}
+	return nil
+}
+
+func (r *OrderRepository) ShipProductOrders(ctx context.Context, sellerID, productID int64) (int, int, int, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	const productQuery = `SELECT 1 FROM products WHERE id = ? AND seller_id = ? AND is_deleted = 0`
+	if err := tx.QueryRowContext(ctx, productQuery, productID, sellerID).Scan(&exists); err != nil {
+		return 0, 0, 0, err
+	}
+
+	const orderQuery = `
+SELECT quantity
+FROM orders
+WHERE seller_id = ? AND product_id = ? AND status = ?
+FOR UPDATE`
+	rows, err := tx.QueryContext(ctx, orderQuery, sellerID, productID, orderdomain.StatusPlacedUnshipped)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer rows.Close()
+
+	orderCount := 0
+	shipQuantity := 0
+	for rows.Next() {
+		var quantity int
+		if err := rows.Scan(&quantity); err != nil {
+			return 0, 0, 0, err
+		}
+		orderCount++
+		shipQuantity += quantity
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, err
+	}
+	if orderCount == 0 {
+		return 0, 0, 0, tx.Commit()
+	}
+
+	var available int
+	var reserved int
+	if err := tx.QueryRowContext(ctx, `SELECT available_quantity, reserved_quantity FROM product_inventory WHERE product_id = ? FOR UPDATE`, productID).Scan(&available, &reserved); err != nil {
+		return 0, 0, 0, err
+	}
+	useReserved := shipQuantity
+	if reserved < useReserved {
+		useReserved = reserved
+	}
+	needAvailable := shipQuantity - useReserved
+	if available < needAvailable {
+		return 0, 0, available, ErrInventoryNotEnough
+	}
+
+	const updateInventory = `
+UPDATE product_inventory
+SET available_quantity = available_quantity - ?,
+    reserved_quantity = reserved_quantity - ?,
+    shipped_quantity = shipped_quantity + ?
+WHERE product_id = ?`
+	if _, err := tx.ExecContext(ctx, updateInventory, needAvailable, useReserved, shipQuantity, productID); err != nil {
+		return 0, 0, 0, err
+	}
+	const updateOrders = `
+UPDATE orders
+SET status = ?, shipped_at = CURRENT_TIMESTAMP(3)
+WHERE seller_id = ? AND product_id = ? AND status = ?`
+	if _, err := tx.ExecContext(ctx, updateOrders, orderdomain.StatusShipping, sellerID, productID, orderdomain.StatusPlacedUnshipped); err != nil {
+		return 0, 0, 0, err
+	}
+	return orderCount, shipQuantity, available - needAvailable, tx.Commit()
+}

@@ -16,11 +16,15 @@ var (
 	ErrBalanceNotEnough   = errors.New("balance not enough")
 	ErrInventoryNotEnough = errors.New("inventory not enough")
 	ErrProductNotBuyable  = errors.New("product not buyable")
+	ErrOrderStatusInvalid = errors.New("order status invalid")
 )
 
 type Repository interface {
 	CreateOrder(ctx context.Context, params repository.CreateOrderParams) (int64, int64, error)
 	ListBuyerOrders(ctx context.Context, buyerID int64, statuses []int, limit, offset int) ([]repository.Order, error)
+	RefundOrder(ctx context.Context, buyerID, orderID int64, idempotencyKey string) (int64, error)
+	ReceiveOrder(ctx context.Context, buyerID, orderID int64) error
+	ShipProductOrders(ctx context.Context, sellerID, productID int64) (int, int, int, error)
 }
 
 type Service struct {
@@ -50,6 +54,19 @@ type OrderOutput struct {
 	Status              int    `json:"status"`
 	StatusName          string `json:"statusName"`
 	CreatedAt           string `json:"createdAt"`
+}
+
+type RefundOutput struct {
+	OrderID     int64 `json:"orderId"`
+	Status      int   `json:"status"`
+	BalanceCent int64 `json:"balanceCent"`
+}
+
+type ShipOutput struct {
+	ProductID          int64 `json:"productId"`
+	ShippedOrderCount  int   `json:"shippedOrderCount"`
+	ShippedQuantity    int   `json:"shippedQuantity"`
+	RemainingInventory int   `json:"remainingInventory"`
 }
 
 func NewService(repo Repository) *Service {
@@ -109,6 +126,57 @@ func (s *Service) ListBuyerOrders(ctx context.Context, page, pageSize int) ([]Or
 		})
 	}
 	return outputs, nil
+}
+
+func (s *Service) RefundOrder(ctx context.Context, orderID int64, idempotencyKey string) (RefundOutput, error) {
+	user, err := currentUser(ctx, auth.RoleBuyer)
+	if err != nil {
+		return RefundOutput{}, err
+	}
+	if orderID <= 0 || strings.TrimSpace(idempotencyKey) == "" {
+		return RefundOutput{}, ErrInvalidArgument
+	}
+	balance, err := s.repo.RefundOrder(ctx, user.ID, orderID, idempotencyKey)
+	if errors.Is(err, repository.ErrOrderStatusInvalid) {
+		return RefundOutput{}, ErrOrderStatusInvalid
+	}
+	if err != nil {
+		return RefundOutput{}, err
+	}
+	return RefundOutput{OrderID: orderID, Status: orderdomain.StatusRefunded, BalanceCent: balance}, nil
+}
+
+func (s *Service) ReceiveOrder(ctx context.Context, orderID int64) error {
+	user, err := currentUser(ctx, auth.RoleBuyer)
+	if err != nil {
+		return err
+	}
+	if orderID <= 0 {
+		return ErrInvalidArgument
+	}
+	err = s.repo.ReceiveOrder(ctx, user.ID, orderID)
+	if errors.Is(err, repository.ErrOrderStatusInvalid) {
+		return ErrOrderStatusInvalid
+	}
+	return err
+}
+
+func (s *Service) ShipProductOrders(ctx context.Context, productID int64) (ShipOutput, error) {
+	user, err := currentUser(ctx, auth.RoleSeller)
+	if err != nil {
+		return ShipOutput{}, err
+	}
+	if productID <= 0 {
+		return ShipOutput{}, ErrInvalidArgument
+	}
+	orderCount, quantity, remaining, err := s.repo.ShipProductOrders(ctx, user.ID, productID)
+	if errors.Is(err, repository.ErrInventoryNotEnough) {
+		return ShipOutput{}, ErrInventoryNotEnough
+	}
+	if err != nil {
+		return ShipOutput{}, err
+	}
+	return ShipOutput{ProductID: productID, ShippedOrderCount: orderCount, ShippedQuantity: quantity, RemainingInventory: remaining}, nil
 }
 
 func currentUser(ctx context.Context, role string) (auth.CurrentUser, error) {

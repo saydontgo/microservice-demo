@@ -25,6 +25,18 @@ func (r *fakeRepo) ListBuyerOrders(_ context.Context, buyerID int64, statuses []
 	return r.orders, r.err
 }
 
+func (r *fakeRepo) RefundOrder(context.Context, int64, int64, string) (int64, error) {
+	return 8800, r.err
+}
+
+func (r *fakeRepo) ReceiveOrder(context.Context, int64, int64) error {
+	return r.err
+}
+
+func (r *fakeRepo) ShipProductOrders(context.Context, int64, int64) (int, int, int, error) {
+	return 2, 5, 10, r.err
+}
+
 func TestServiceCreateOrder_BitsUT(t *testing.T) {
 	t.Run("下单成功", func(t *testing.T) {
 		repo := &fakeRepo{}
@@ -77,4 +89,67 @@ func TestServiceListBuyerOrders_BitsUT(t *testing.T) {
 	if len(got) != 1 || got[0].StatusName != "SHIPPING" || got[0].CreatedAt == "" {
 		t.Fatalf("ListBuyerOrders() = %+v", got)
 	}
+}
+
+func TestServiceRefundOrder_BitsUT(t *testing.T) {
+	t.Run("退款成功", func(t *testing.T) {
+		svc := NewService(&fakeRepo{})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
+
+		got, err := svc.RefundOrder(ctx, 5001, "refund-1")
+
+		if err != nil {
+			t.Fatalf("RefundOrder() error = %v", err)
+		}
+		if got.Status != orderdomain.StatusRefunded || got.BalanceCent != 8800 {
+			t.Fatalf("RefundOrder() = %+v", got)
+		}
+	})
+
+	t.Run("状态不允许退款", func(t *testing.T) {
+		svc := NewService(&fakeRepo{err: repository.ErrOrderStatusInvalid})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
+
+		_, err := svc.RefundOrder(ctx, 5001, "refund-1")
+
+		if err != ErrOrderStatusInvalid {
+			t.Fatalf("error = %v, want ErrOrderStatusInvalid", err)
+		}
+	})
+}
+
+func TestServiceReceiveOrder_BitsUT(t *testing.T) {
+	svc := NewService(&fakeRepo{})
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
+
+	if err := svc.ReceiveOrder(ctx, 5001); err != nil {
+		t.Fatalf("ReceiveOrder() error = %v", err)
+	}
+}
+
+func TestServiceShipProductOrders_BitsUT(t *testing.T) {
+	t.Run("一键发货成功", func(t *testing.T) {
+		svc := NewService(&fakeRepo{})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+
+		got, err := svc.ShipProductOrders(ctx, 3001)
+
+		if err != nil {
+			t.Fatalf("ShipProductOrders() error = %v", err)
+		}
+		if got.ShippedOrderCount != 2 || got.ShippedQuantity != 5 || got.RemainingInventory != 10 {
+			t.Fatalf("ShipProductOrders() = %+v", got)
+		}
+	})
+
+	t.Run("库存不足", func(t *testing.T) {
+		svc := NewService(&fakeRepo{err: repository.ErrInventoryNotEnough})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+
+		_, err := svc.ShipProductOrders(ctx, 3001)
+
+		if err != ErrInventoryNotEnough {
+			t.Fatalf("error = %v, want ErrInventoryNotEnough", err)
+		}
+	})
 }
