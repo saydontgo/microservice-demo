@@ -11,10 +11,13 @@ import (
 )
 
 type fakeRepo struct {
-	createIn  repository.CreateProductParams
-	updateIn  repository.UpdateProductParams
-	products  []repository.Product
-	available int
+	createIn       repository.CreateProductParams
+	updateIn       repository.UpdateProductParams
+	filterIn       repository.SellerProductFilter
+	products       []repository.Product
+	sellerProducts []repository.SellerProduct
+	trends         []repository.TrendPoint
+	available      int
 }
 
 func (r *fakeRepo) CreateProduct(_ context.Context, params repository.CreateProductParams) (int64, error) {
@@ -33,6 +36,19 @@ func (r *fakeRepo) AddInventory(context.Context, int64, int64, int) (int, error)
 
 func (r *fakeRepo) SearchBuyerProducts(context.Context, string, int, int) ([]repository.Product, error) {
 	return r.products, nil
+}
+
+func (r *fakeRepo) ListSellerProducts(_ context.Context, filter repository.SellerProductFilter) ([]repository.SellerProduct, error) {
+	r.filterIn = filter
+	return r.sellerProducts, nil
+}
+
+func (r *fakeRepo) ListSellerTrend(context.Context, int64, string, string) ([]repository.TrendPoint, error) {
+	return r.trends, nil
+}
+
+func (r *fakeRepo) DelistProduct(context.Context, int64, int64) error {
+	return nil
 }
 
 func TestServiceCreateProduct_BitsUT(t *testing.T) {
@@ -90,4 +106,47 @@ func TestServiceAddInventory_BitsUT(t *testing.T) {
 			t.Fatalf("AvailableQuantity = %d, want 30", got.AvailableQuantity)
 		}
 	})
+}
+
+func TestServiceListSellerProducts_BitsUT(t *testing.T) {
+	status := productdomain.StatusOnSale
+	repo := &fakeRepo{sellerProducts: []repository.SellerProduct{{Product: repository.Product{ID: 1, ProductName: "手机壳", PriceCent: 1999, Status: status, AvailableQuantity: 10}, DealAmountCent: 10000, RefundAmountCent: 1000, RefundRate: 0.1}}}
+	svc := NewService(repo)
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+
+	got, err := svc.ListSellerProducts(ctx, SellerProductListInput{StartDate: "2026-05-18", EndDate: "2026-05-24", Status: &status, ProductNamePrefix: "手机", Page: 1, PageSize: 20})
+
+	if err != nil {
+		t.Fatalf("ListSellerProducts() error = %v", err)
+	}
+	if repo.filterIn.SellerID != 1001 || repo.filterIn.ProductNamePrefix != "手机" {
+		t.Fatalf("filterIn = %+v", repo.filterIn)
+	}
+	if len(got) != 1 || got[0].DealAmountCent != 10000 || got[0].RefundRate != 0.1 {
+		t.Fatalf("ListSellerProducts() = %+v", got)
+	}
+}
+
+func TestServiceListSellerTrend_BitsUT(t *testing.T) {
+	repo := &fakeRepo{trends: []repository.TrendPoint{{Date: "2026-05-19", DealAmountCent: 10000, RefundAmountCent: 1000, RefundRate: 0.1}}}
+	svc := NewService(repo)
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+
+	got, err := svc.ListSellerTrend(ctx, TrendInput{StartDate: "2026-05-18", EndDate: "2026-05-20"})
+
+	if err != nil {
+		t.Fatalf("ListSellerTrend() error = %v", err)
+	}
+	if len(got.Points) != 3 || got.Points[0].DealAmountCent != 0 || got.Points[1].RefundRate != 0.1 {
+		t.Fatalf("ListSellerTrend() = %+v", got)
+	}
+}
+
+func TestServiceDelistProduct_BitsUT(t *testing.T) {
+	svc := NewService(&fakeRepo{})
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+
+	if err := svc.DelistProduct(ctx, 3001); err != nil {
+		t.Fatalf("DelistProduct() error = %v", err)
+	}
 }

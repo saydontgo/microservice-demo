@@ -41,10 +41,13 @@ func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandl
 	sellerAuth := middleware.Auth(verifier, auth.RoleSeller)
 	mux.Handle("GET /api/seller/profile", sellerAuth(http.HandlerFunc(userHandler.GetSellerProfile)))
 	mux.Handle("PUT /api/seller/profile", sellerAuth(http.HandlerFunc(userHandler.UpdateSellerProfile)))
+	mux.Handle("GET /api/seller/products", sellerAuth(http.HandlerFunc(productHandler.ListSellerProducts)))
 	mux.Handle("POST /api/seller/products", sellerAuth(http.HandlerFunc(productHandler.CreateProduct)))
 	mux.Handle("PUT /api/seller/products/{productId}", sellerAuth(http.HandlerFunc(productHandler.UpdateProduct)))
 	mux.Handle("POST /api/seller/products/{productId}/inventory/add", sellerAuth(http.HandlerFunc(productHandler.AddInventory)))
 	mux.Handle("POST /api/seller/products/{productId}/ship-all", sellerAuth(http.HandlerFunc(orderHandler.ShipProductOrders)))
+	mux.Handle("POST /api/seller/products/{productId}/delist", sellerAuth(http.HandlerFunc(productHandler.DelistProduct)))
+	mux.Handle("GET /api/seller/trends", sellerAuth(http.HandlerFunc(productHandler.ListSellerTrend)))
 
 	return middleware.RequestID(mux)
 }

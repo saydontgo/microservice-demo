@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"microservice-demo/internal/http/response"
 	productsvc "microservice-demo/internal/service/product"
@@ -16,6 +17,9 @@ type ProductService interface {
 	UpdateProduct(ctx context.Context, input productsvc.UpdateProductInput) error
 	AddInventory(ctx context.Context, productID int64, quantity int) (productsvc.InventoryOutput, error)
 	SearchBuyerProducts(ctx context.Context, namePrefix string, page, pageSize int) ([]productsvc.ProductOutput, error)
+	ListSellerProducts(ctx context.Context, input productsvc.SellerProductListInput) ([]productsvc.SellerProductOutput, error)
+	ListSellerTrend(ctx context.Context, input productsvc.TrendInput) (productsvc.TrendOutput, error)
+	DelistProduct(ctx context.Context, productID int64) error
 }
 
 type ProductHandler struct {
@@ -120,6 +124,50 @@ func (h *ProductHandler) SearchBuyerProducts(w http.ResponseWriter, r *http.Requ
 	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
 }
 
+func (h *ProductHandler) ListSellerProducts(w http.ResponseWriter, r *http.Request) {
+	items, err := h.service.ListSellerProducts(r.Context(), productsvc.SellerProductListInput{
+		StartDate:         r.URL.Query().Get("startDate"),
+		EndDate:           r.URL.Query().Get("endDate"),
+		Status:            queryOptionalInt(r, "status"),
+		ProductID:         queryOptionalInt64(r, "productId"),
+		ProductNamePrefix: r.URL.Query().Get("productNamePrefix"),
+		Shipped:           queryOptionalBool(r, "shipped"),
+		Page:              queryInt(r, "page", 1),
+		PageSize:          queryInt(r, "pageSize", 20),
+	})
+	if err != nil {
+		writeProductError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *ProductHandler) ListSellerTrend(w http.ResponseWriter, r *http.Request) {
+	output, err := h.service.ListSellerTrend(r.Context(), productsvc.TrendInput{
+		StartDate: r.URL.Query().Get("startDate"),
+		EndDate:   r.URL.Query().Get("endDate"),
+		Days:      queryInt(r, "days", 7),
+	})
+	if err != nil {
+		writeProductError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, output)
+}
+
+func (h *ProductHandler) DelistProduct(w http.ResponseWriter, r *http.Request) {
+	productID, ok := pathInt64(r, "productId")
+	if !ok {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "商品 ID 不合法")
+		return
+	}
+	if err := h.service.DelistProduct(r.Context(), productID); err != nil {
+		writeProductError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{"productId": productID, "status": 3, "statusName": "DELISTING"})
+}
+
 func writeProductError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, productsvc.ErrInvalidArgument):
@@ -148,4 +196,37 @@ func queryInt(r *http.Request, name string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func queryOptionalInt(r *http.Request, name string) *int {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func queryOptionalInt64(r *http.Request, name string) *int64 {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func queryOptionalBool(r *http.Request, name string) *bool {
+	value := strings.ToLower(r.URL.Query().Get(name))
+	if value == "" {
+		return nil
+	}
+	parsed := value == "true" || value == "1"
+	return &parsed
 }
