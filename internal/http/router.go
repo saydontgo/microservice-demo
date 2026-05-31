@@ -22,7 +22,7 @@ func NewRouterWithAuth(mysql handler.Pinger, redis handler.Pinger, authHandler *
 	return middleware.RequestID(mux)
 }
 
-func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandler *handler.AuthHandler, userHandler *handler.UserHandler, productHandler *handler.ProductHandler, verifier middleware.TokenVerifier) http.Handler {
+func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandler *handler.AuthHandler, userHandler *handler.UserHandler, productHandler *handler.ProductHandler, orderHandler *handler.OrderHandler, verifier middleware.TokenVerifier) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /health", handler.NewHealthHandler(mysql, redis))
 	mux.HandleFunc("POST /api/auth/register", authHandler.Register)
@@ -33,6 +33,8 @@ func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandl
 	mux.Handle("PUT /api/buyer/profile", buyerAuth(http.HandlerFunc(userHandler.UpdateBuyerProfile)))
 	mux.Handle("POST /api/buyer/balance/recharge", buyerAuth(http.HandlerFunc(userHandler.RechargeBuyerBalance)))
 	mux.Handle("GET /api/buyer/products", buyerAuth(http.HandlerFunc(productHandler.SearchBuyerProducts)))
+	mux.Handle("POST /api/buyer/orders", buyerAuth(http.HandlerFunc(orderHandler.CreateOrder)))
+	mux.Handle("GET /api/buyer/orders", buyerAuth(http.HandlerFunc(orderHandler.ListBuyerOrders)))
 
 	sellerAuth := middleware.Auth(verifier, auth.RoleSeller)
 	mux.Handle("GET /api/seller/profile", sellerAuth(http.HandlerFunc(userHandler.GetSellerProfile)))
