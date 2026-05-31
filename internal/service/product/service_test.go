@@ -18,6 +18,7 @@ type fakeRepo struct {
 	sellerProducts []repository.SellerProduct
 	trends         []repository.TrendPoint
 	available      int
+	delistStatus   int
 }
 
 func (r *fakeRepo) CreateProduct(_ context.Context, params repository.CreateProductParams) (int64, error) {
@@ -47,8 +48,8 @@ func (r *fakeRepo) ListSellerTrend(context.Context, int64, string, string) ([]re
 	return r.trends, nil
 }
 
-func (r *fakeRepo) DelistProduct(context.Context, int64, int64) error {
-	return nil
+func (r *fakeRepo) DelistProduct(context.Context, int64, int64) (int, error) {
+	return r.delistStatus, nil
 }
 
 func TestServiceCreateProduct_BitsUT(t *testing.T) {
@@ -143,10 +144,14 @@ func TestServiceListSellerTrend_BitsUT(t *testing.T) {
 }
 
 func TestServiceDelistProduct_BitsUT(t *testing.T) {
-	svc := NewService(&fakeRepo{})
+	svc := NewService(&fakeRepo{delistStatus: productdomain.StatusOffShelf})
 	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
 
-	if err := svc.DelistProduct(ctx, 3001); err != nil {
+	got, err := svc.DelistProduct(ctx, 3001)
+	if err != nil {
 		t.Fatalf("DelistProduct() error = %v", err)
+	}
+	if got.Status != productdomain.StatusOffShelf || got.StatusName != "OFF_SHELF" {
+		t.Fatalf("DelistProduct() = %+v", got)
 	}
 }

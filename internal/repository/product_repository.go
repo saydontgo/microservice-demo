@@ -263,21 +263,42 @@ ORDER BY biz_date ASC`
 	return points, rows.Err()
 }
 
-func (r *ProductRepository) DelistProduct(ctx context.Context, sellerID, productID int64) error {
-	const query = `
+func (r *ProductRepository) DelistProduct(ctx context.Context, sellerID, productID int64) (int, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var status int
+	const productQuery = `
+SELECT status
+FROM products
+WHERE id = ? AND seller_id = ? AND status = 1 AND is_deleted = 0
+FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, productQuery, productID, sellerID).Scan(&status); err != nil {
+		return 0, err
+	}
+
+	nextStatus := 3
+	var unfinishedCount int
+	const orderQuery = `
+SELECT COUNT(*)
+FROM orders
+WHERE product_id = ? AND seller_id = ? AND status IN (1, 2)`
+	if err := tx.QueryRowContext(ctx, orderQuery, productID, sellerID).Scan(&unfinishedCount); err != nil {
+		return 0, err
+	}
+	if unfinishedCount == 0 {
+		nextStatus = 4
+	}
+
+	const updateQuery = `
 UPDATE products
-SET status = 3
-WHERE id = ? AND seller_id = ? AND status = 1 AND is_deleted = 0`
-	result, err := r.db.ExecContext(ctx, query, productID, sellerID)
-	if err != nil {
-		return err
+SET status = ?
+WHERE id = ? AND seller_id = ?`
+	if _, err := tx.ExecContext(ctx, updateQuery, nextStatus, productID, sellerID); err != nil {
+		return 0, err
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return nextStatus, tx.Commit()
 }

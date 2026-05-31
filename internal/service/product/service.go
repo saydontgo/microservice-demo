@@ -25,7 +25,7 @@ type Repository interface {
 	SearchBuyerProducts(ctx context.Context, namePrefix string, limit, offset int) ([]repository.Product, error)
 	ListSellerProducts(ctx context.Context, filter repository.SellerProductFilter) ([]repository.SellerProduct, error)
 	ListSellerTrend(ctx context.Context, sellerID int64, startDate, endDate string) ([]repository.TrendPoint, error)
-	DelistProduct(ctx context.Context, sellerID, productID int64) error
+	DelistProduct(ctx context.Context, sellerID, productID int64) (int, error)
 }
 
 type Service struct {
@@ -67,6 +67,12 @@ type CreateProductOutput struct {
 type InventoryOutput struct {
 	ProductID         int64 `json:"productId"`
 	AvailableQuantity int   `json:"availableQuantity"`
+}
+
+type DelistProductOutput struct {
+	ProductID  int64  `json:"productId"`
+	Status     int    `json:"status"`
+	StatusName string `json:"statusName"`
 }
 
 type SellerProductListInput struct {
@@ -257,19 +263,22 @@ func (s *Service) ListSellerTrend(ctx context.Context, input TrendInput) (TrendO
 	return TrendOutput{Points: fillTrendPoints(startDate, endDate, points)}, nil
 }
 
-func (s *Service) DelistProduct(ctx context.Context, productID int64) error {
+func (s *Service) DelistProduct(ctx context.Context, productID int64) (DelistProductOutput, error) {
 	user, err := currentUser(ctx, auth.RoleSeller)
 	if err != nil {
-		return err
+		return DelistProductOutput{}, err
 	}
 	if productID <= 0 {
-		return ErrInvalidArgument
+		return DelistProductOutput{}, ErrInvalidArgument
 	}
-	err = s.repo.DelistProduct(ctx, user.ID, productID)
+	status, err := s.repo.DelistProduct(ctx, user.ID, productID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrProductNotFound
+		return DelistProductOutput{}, ErrProductNotFound
 	}
-	return err
+	if err != nil {
+		return DelistProductOutput{}, err
+	}
+	return DelistProductOutput{ProductID: productID, Status: status, StatusName: productdomain.StatusName(status)}, nil
 }
 
 func currentUser(ctx context.Context, role string) (auth.CurrentUser, error) {

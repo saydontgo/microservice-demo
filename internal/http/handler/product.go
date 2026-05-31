@@ -19,7 +19,7 @@ type ProductService interface {
 	SearchBuyerProducts(ctx context.Context, namePrefix string, page, pageSize int) ([]productsvc.ProductOutput, error)
 	ListSellerProducts(ctx context.Context, input productsvc.SellerProductListInput) ([]productsvc.SellerProductOutput, error)
 	ListSellerTrend(ctx context.Context, input productsvc.TrendInput) (productsvc.TrendOutput, error)
-	DelistProduct(ctx context.Context, productID int64) error
+	DelistProduct(ctx context.Context, productID int64) (productsvc.DelistProductOutput, error)
 }
 
 type ProductHandler struct {
@@ -161,11 +161,12 @@ func (h *ProductHandler) DelistProduct(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "商品 ID 不合法")
 		return
 	}
-	if err := h.service.DelistProduct(r.Context(), productID); err != nil {
+	output, err := h.service.DelistProduct(r.Context(), productID)
+	if err != nil {
 		writeProductError(w, r, err)
 		return
 	}
-	response.JSON(w, r, http.StatusOK, map[string]any{"productId": productID, "status": 3, "statusName": "DELISTING"})
+	response.JSON(w, r, http.StatusOK, output)
 }
 
 func writeProductError(w http.ResponseWriter, r *http.Request, err error) {

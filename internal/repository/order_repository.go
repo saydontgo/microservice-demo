@@ -212,6 +212,9 @@ WHERE id = ?`
 	if _, err := tx.ExecContext(ctx, updateOrder, orderdomain.StatusRefunded, orderID); err != nil {
 		return 0, err
 	}
+	if err := completeDelistingProduct(ctx, tx, sellerID, productID); err != nil {
+		return 0, err
+	}
 
 	bizDate := time.Now().Format("2006-01-02")
 	const upsertProductStats = `
@@ -237,22 +240,37 @@ ON DUPLICATE KEY UPDATE refund_amount_cent = refund_amount_cent + VALUES(refund_
 }
 
 func (r *OrderRepository) ReceiveOrder(ctx context.Context, buyerID, orderID int64) error {
-	const query = `
-UPDATE orders
-SET status = ?, is_deal_completed = 1, received_at = CURRENT_TIMESTAMP(3)
-WHERE id = ? AND buyer_id = ? AND status = ?`
-	result, err := r.db.ExecContext(ctx, query, orderdomain.StatusReceived, orderID, buyerID, orderdomain.StatusShipping)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
+	defer tx.Rollback()
+
+	var sellerID int64
+	var productID int64
+	var status int
+	const selectOrder = `
+SELECT seller_id, product_id, status
+FROM orders
+WHERE id = ? AND buyer_id = ?
+FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, selectOrder, orderID, buyerID).Scan(&sellerID, &productID, &status); err != nil {
 		return err
 	}
-	if rows == 0 {
+	if status != orderdomain.StatusShipping {
 		return ErrOrderStatusInvalid
 	}
-	return nil
+	const updateOrder = `
+UPDATE orders
+SET status = ?, is_deal_completed = 1, received_at = CURRENT_TIMESTAMP(3)
+WHERE id = ?`
+	if _, err := tx.ExecContext(ctx, updateOrder, orderdomain.StatusReceived, orderID); err != nil {
+		return err
+	}
+	if err := completeDelistingProduct(ctx, tx, sellerID, productID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *OrderRepository) ShipProductOrders(ctx context.Context, sellerID, productID int64) (int, int, int, error) {
@@ -327,4 +345,33 @@ WHERE seller_id = ? AND product_id = ? AND status = ?`
 		return 0, 0, 0, err
 	}
 	return orderCount, shipQuantity, available - needAvailable, tx.Commit()
+}
+
+func completeDelistingProduct(ctx context.Context, tx *sql.Tx, sellerID, productID int64) error {
+	var productStatus int
+	const selectProduct = `
+SELECT status
+FROM products
+WHERE id = ? AND seller_id = ? AND is_deleted = 0
+FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, selectProduct, productID, sellerID).Scan(&productStatus); err != nil {
+		return err
+	}
+	if productStatus != productdomain.StatusDelisting {
+		return nil
+	}
+
+	var unfinishedCount int
+	const countOrders = `
+SELECT COUNT(*)
+FROM orders
+WHERE product_id = ? AND seller_id = ? AND status IN (?, ?)`
+	if err := tx.QueryRowContext(ctx, countOrders, productID, sellerID, orderdomain.StatusPlacedUnshipped, orderdomain.StatusShipping).Scan(&unfinishedCount); err != nil {
+		return err
+	}
+	if unfinishedCount > 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE products SET status = ? WHERE id = ? AND seller_id = ?`, productdomain.StatusOffShelf, productID, sellerID)
+	return err
 }
