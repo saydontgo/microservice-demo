@@ -25,6 +25,8 @@ const state = {
   sellerTab: "products",
   buyerProfile: null,
   sellerProfile: null,
+  buyerProductName: "",
+  buyerOrderStatus: "",
   buyerProducts: [],
   buyerOrders: [],
   sellerProducts: [],
@@ -65,8 +67,10 @@ function showToast(message, type = "info") {
 }
 
 async function apiFetch(path, options = {}) {
+  const requestId = options.requestId || `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const headers = {
     "Content-Type": "application/json",
+    "X-Request-Id": requestId,
     ...(options.headers || {}),
   };
   if (state.token) {
@@ -81,7 +85,7 @@ async function apiFetch(path, options = {}) {
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(json.message || json.code || `HTTP ${res.status}`);
+    throw new Error(`${json.message || json.code || `HTTP ${res.status}`}，requestId=${json.requestId || requestId}`);
   }
   return json.data;
 }
@@ -143,7 +147,8 @@ async function refreshSellerProfile() {
 }
 
 async function refreshBuyerProducts(params = {}) {
-  const namePrefix = params.namePrefix || document.querySelector("[name=buyerProductName]")?.value || "";
+  const namePrefix = params.namePrefix || params.buyerProductName || state.buyerProductName;
+  state.buyerProductName = namePrefix;
   if (!namePrefix.trim()) {
     showToast("请输入商品名前缀");
     return;
@@ -153,7 +158,8 @@ async function refreshBuyerProducts(params = {}) {
 }
 
 async function refreshBuyerOrders(params = {}) {
-  const data = await apiFetch(`/api/buyer/orders${qs({ status: params.status, page: 1, pageSize: 50 })}`);
+  state.buyerOrderStatus = params.status ?? state.buyerOrderStatus;
+  const data = await apiFetch(`/api/buyer/orders${qs({ status: state.buyerOrderStatus, page: 1, pageSize: 50 })}`);
   state.buyerOrders = data.items || [];
 }
 
@@ -308,7 +314,7 @@ function renderBuyerProducts() {
         <div><h2>商品浏览</h2><span class="subtle">按商品名前缀搜索后下单支付</span></div>
       </div>
       <form class="toolbar" data-form="buyer-search-products">
-        <div class="field"><label>商品名前缀</label><input name="buyerProductName" placeholder="phone" /></div>
+        <div class="field"><label>商品名前缀</label><input name="buyerProductName" value="${htmlEscape(state.buyerProductName)}" placeholder="phone" /></div>
         <button class="primary" type="submit">搜索商品</button>
       </form>
     </div>
@@ -351,11 +357,11 @@ function renderBuyerOrders() {
         <div class="field">
           <label>订单状态</label>
           <select name="status">
-            <option value="">默认</option>
-            <option value="1">已下单未发货</option>
-            <option value="2">配送中</option>
-            <option value="3">已收货</option>
-            <option value="4">已退款</option>
+            <option value="" ${state.buyerOrderStatus === "" ? "selected" : ""}>默认</option>
+            <option value="1" ${state.buyerOrderStatus === "1" ? "selected" : ""}>已下单未发货</option>
+            <option value="2" ${state.buyerOrderStatus === "2" ? "selected" : ""}>配送中</option>
+            <option value="3" ${state.buyerOrderStatus === "3" ? "selected" : ""}>已收货</option>
+            <option value="4" ${state.buyerOrderStatus === "4" ? "selected" : ""}>已退款</option>
           </select>
         </div>
         <button class="primary" type="submit">查询订单</button>
