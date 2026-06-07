@@ -3,12 +3,13 @@
 --   buyer:  demo_buyer  / demo123
 --   seller: demo_seller / demo123
 
-SET NAMES utf8mb4;
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+SET collation_connection = 'utf8mb4_unicode_ci';
 
 SET @password_salt := 'microservice-demo';
 SET @demo_password := 'demo123';
-SET @buyer_username := 'demo_buyer';
-SET @seller_username := 'demo_seller';
+SET @buyer_username := 'demo_buyer' COLLATE utf8mb4_unicode_ci;
+SET @seller_username := 'demo_seller' COLLATE utf8mb4_unicode_ci;
 SET @buyer_hash := SHA2(CONCAT(@password_salt, ':', @demo_password), 256);
 SET @seller_hash := SHA2(CONCAT(@password_salt, ':', @demo_password), 256);
 
