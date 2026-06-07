@@ -31,6 +31,7 @@ const state = {
   buyerOrders: [],
   sellerProducts: [],
   trendPoints: [],
+  trendHoverIndex: -1,
   loading: false,
 };
 
@@ -171,6 +172,8 @@ async function refreshSellerProducts(params = {}) {
 async function refreshTrend(days = 7) {
   const data = await apiFetch(`/api/seller/trends${qs({ days })}`);
   state.trendPoints = data.points || [];
+  state.trendHoverIndex = -1;
+  hideTrendTooltip();
   window.setTimeout(drawTrendChart, 0);
 }
 
@@ -439,7 +442,15 @@ function renderSellerProducts() {
         <div><h2>趋势图</h2><span class="subtle">成交金额、退款金额、退款率</span></div>
         <form class="row-actions" data-form="seller-trend"><input name="days" type="number" min="1" max="90" value="7" /><button class="ghost" type="submit">刷新趋势</button></form>
       </div>
-      <canvas id="trendChart" class="chart"></canvas>
+      <div class="chart-panel">
+        <div class="chart-legend">
+          <span><b style="background:#b96b24"></b>成交额</span>
+          <span><b style="background:#b73535"></b>退款额</span>
+          <span><b style="background:#1f5b4e"></b>退款率</span>
+        </div>
+        <canvas id="trendChart" class="chart"></canvas>
+        <div id="trendTooltip" class="chart-tooltip hidden"></div>
+      </div>
     </div>
     <div class="card">
       <div class="section-title"><h2>创建商品</h2></div>
@@ -447,7 +458,7 @@ function renderSellerProducts() {
         <div class="field"><label>商品名</label><input name="productName" required /></div>
         <div class="field"><label>价格，单位元</label><input name="price" type="number" min="0.01" step="0.01" required /></div>
         <div class="field"><label>初始库存</label><input name="initialInventory" type="number" min="0" value="0" /></div>
-        <div class="field"><label>状态</label>${productStatusSelect("status", 1)}</div>
+        <div class="field"><label>状态</label>${productCreateStatusSelect("status", 1)}</div>
         <div class="field"><label>描述</label><input name="description" /></div>
         <button class="primary" type="submit">创建商品</button>
       </form>
@@ -530,6 +541,15 @@ function productStatusSelect(name, selected) {
   `;
 }
 
+function productCreateStatusSelect(name, selected) {
+  return `
+    <select name="${name}">
+      <option value="1" ${Number(selected) === 1 ? "selected" : ""}>在售</option>
+      <option value="2" ${Number(selected) === 2 ? "selected" : ""}>预售中</option>
+    </select>
+  `;
+}
+
 function statusBadge(status, label) {
   const cls = status === 1 || status === 2 ? "ok" : status === 3 ? "warn" : "danger";
   return `<span class="badge ${cls}">${label || status}</span>`;
@@ -550,43 +570,172 @@ function drawTrendChart() {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, rect.width, rect.height);
   const points = state.trendPoints;
-  ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--line");
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 5; i += 1) {
-    const y = 28 + i * ((rect.height - 56) / 4);
-    ctx.beginPath();
-    ctx.moveTo(28, y);
-    ctx.lineTo(rect.width - 28, y);
-    ctx.stroke();
-  }
+  const colors = cssColors();
+  const layout = trendLayout(rect);
+  const maxAmountCent = niceMaxCent(Math.max(...points.flatMap((p) => [p.dealAmountCent || 0, p.refundAmountCent || 0]), 0));
+  drawTrendAxes(ctx, rect, layout, maxAmountCent, colors);
   if (!points.length) {
-    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--muted");
-    ctx.fillText("暂无趋势数据", 28, 40);
+    ctx.fillStyle = colors.muted;
+    ctx.fillText("暂无趋势数据", layout.left, layout.top + 22);
     return;
   }
-  const maxValue = Math.max(...points.flatMap((p) => [p.dealAmountCent || 0, p.refundAmountCent || 0]), 1);
-  drawLine(ctx, rect, points, "dealAmountCent", maxValue, "#b96b24");
-  drawLine(ctx, rect, points, "refundAmountCent", maxValue, "#b73535");
-  drawLine(ctx, rect, points, "refundRate", 1, "#1f5b4e");
-  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--muted");
-  ctx.fillText("成交额 / 退款额 / 退款率", 28, 22);
+  drawTrendLine(ctx, layout, points, "dealAmountCent", maxAmountCent, "#b96b24", false);
+  drawTrendLine(ctx, layout, points, "refundAmountCent", maxAmountCent, "#b73535", false);
+  drawTrendLine(ctx, layout, points, "refundRate", 1, "#1f5b4e", true);
+  drawTrendHover(ctx, layout, points, maxAmountCent, colors);
+  setupTrendChartInteractions(canvas, layout, points);
 }
 
-function drawLine(ctx, rect, points, key, maxValue, color) {
-  const left = 30;
-  const right = rect.width - 30;
-  const top = 34;
-  const bottom = rect.height - 30;
+function trendLayout(rect) {
+  return {
+    left: 72,
+    right: rect.width - 72,
+    top: 34,
+    bottom: rect.height - 46,
+  };
+}
+
+function cssColors() {
+  const styles = getComputedStyle(document.body);
+  return {
+    text: styles.getPropertyValue("--text").trim(),
+    muted: styles.getPropertyValue("--muted").trim(),
+    line: styles.getPropertyValue("--line").trim(),
+  };
+}
+
+function niceMaxCent(value) {
+  const amount = Math.max(Number(value) || 0, 100);
+  const magnitude = 10 ** Math.floor(Math.log10(amount));
+  const normalized = amount / magnitude;
+  const niceNormalized = normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return niceNormalized * magnitude;
+}
+
+function drawTrendAxes(ctx, rect, layout, maxAmountCent, colors) {
+  ctx.font = "12px Georgia, serif";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i += 1) {
+    const ratio = i / 4;
+    const value = maxAmountCent * (1 - ratio);
+    const y = layout.top + ratio * (layout.bottom - layout.top);
+    ctx.strokeStyle = ratio === 1 ? colors.text : colors.line;
+    ctx.beginPath();
+    ctx.moveTo(layout.left, y);
+    ctx.lineTo(layout.right, y);
+    ctx.stroke();
+    ctx.fillStyle = colors.muted;
+    ctx.textAlign = "right";
+    ctx.fillText(money(value), layout.left - 10, y);
+    ctx.textAlign = "left";
+    ctx.fillText(`${Math.round((1 - ratio) * 100)}%`, layout.right + 10, y);
+  }
+  ctx.strokeStyle = colors.text;
+  ctx.beginPath();
+  ctx.moveTo(layout.left, layout.top);
+  ctx.lineTo(layout.left, layout.bottom);
+  ctx.lineTo(layout.right, layout.bottom);
+  ctx.stroke();
+
+  ctx.fillStyle = colors.muted;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  state.trendPoints.forEach((point, index) => {
+    const x = trendX(layout, state.trendPoints.length, index);
+    ctx.fillText(formatTrendDate(point.date), x, layout.bottom + 12);
+  });
+}
+
+function drawTrendLine(ctx, layout, points, key, maxValue, color, dashed) {
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
+  if (dashed) ctx.setLineDash([8, 6]);
+  else ctx.setLineDash([]);
   ctx.beginPath();
   points.forEach((point, index) => {
-    const x = points.length === 1 ? left : left + (index / (points.length - 1)) * (right - left);
-    const y = bottom - ((Number(point[key]) || 0) / maxValue) * (bottom - top);
+    const x = trendX(layout, points.length, index);
+    const y = trendY(layout, Number(point[key]) || 0, maxValue);
     if (index === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawTrendHover(ctx, layout, points, maxAmountCent, colors) {
+  const index = state.trendHoverIndex;
+  if (index < 0 || !points[index]) return;
+  const point = points[index];
+  const x = trendX(layout, points.length, index);
+  ctx.strokeStyle = colors.text;
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(x, layout.top);
+  ctx.lineTo(x, layout.bottom);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  [
+    ["dealAmountCent", maxAmountCent, "#b96b24"],
+    ["refundAmountCent", maxAmountCent, "#b73535"],
+    ["refundRate", 1, "#1f5b4e"],
+  ].forEach(([key, maxValue, color]) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, trendY(layout, Number(point[key]) || 0, maxValue), 4, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function setupTrendChartInteractions(canvas, layout, points) {
+  const tooltip = document.querySelector("#trendTooltip");
+  if (!tooltip) return;
+  canvas.onmousemove = (event) => {
+    if (!points.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const step = points.length === 1 ? 0 : (layout.right - layout.left) / (points.length - 1);
+    const index = points.length === 1 ? 0 : Math.round((x - layout.left) / step);
+    if (index < 0 || index >= points.length) {
+      hideTrendTooltip();
+      return;
+    }
+    state.trendHoverIndex = index;
+    const point = points[index];
+    const pointX = trendX(layout, points.length, index);
+    tooltip.innerHTML = `
+      <strong>${htmlEscape(point.date)}</strong><br>
+      成交额：${money(point.dealAmountCent)}<br>
+      退款额：${money(point.refundAmountCent)}<br>
+      退款率：${((Number(point.refundRate) || 0) * 100).toFixed(2)}%
+    `;
+    tooltip.style.left = `${Math.min(Math.max(pointX + 12, 12), rect.width - 180)}px`;
+    tooltip.style.top = "46px";
+    tooltip.classList.remove("hidden");
+    drawTrendChart();
+  };
+  canvas.onmouseleave = () => {
+    state.trendHoverIndex = -1;
+    hideTrendTooltip();
+    drawTrendChart();
+  };
+}
+
+function hideTrendTooltip() {
+  const tooltip = document.querySelector("#trendTooltip");
+  if (tooltip) tooltip.classList.add("hidden");
+}
+
+function trendX(layout, count, index) {
+  return count === 1 ? layout.left : layout.left + (index / (count - 1)) * (layout.right - layout.left);
+}
+
+function trendY(layout, value, maxValue) {
+  return layout.bottom - (Math.max(value, 0) / Math.max(maxValue, 1)) * (layout.bottom - layout.top);
+}
+
+function formatTrendDate(date) {
+  return String(date || "").slice(5) || "-";
 }
 
 document.addEventListener("submit", (event) => {

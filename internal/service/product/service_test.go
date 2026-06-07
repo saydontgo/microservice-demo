@@ -67,6 +67,17 @@ func TestServiceCreateProduct_BitsUT(t *testing.T) {
 	}
 }
 
+func TestServiceCreateProductRejectUnavailableStatus_BitsUT(t *testing.T) {
+	svc := NewService(&fakeRepo{})
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+
+	_, err := svc.CreateProduct(ctx, CreateProductInput{ProductName: "手机壳", PriceCent: 1999, Status: productdomain.StatusOffShelf})
+
+	if err != ErrInvalidArgument {
+		t.Fatalf("error = %v, want ErrInvalidArgument", err)
+	}
+}
+
 func TestServiceSearchBuyerProducts_BitsUT(t *testing.T) {
 	repo := &fakeRepo{products: []repository.Product{{ID: 1, ProductName: "手机壳", PriceCent: 1999, Status: productdomain.StatusPreSale, AvailableQuantity: 0, ShopName: sql.NullString{String: "店铺", Valid: true}}}}
 	svc := NewService(repo)

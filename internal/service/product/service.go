@@ -119,7 +119,7 @@ func (s *Service) CreateProduct(ctx context.Context, input CreateProductInput) (
 	if err != nil {
 		return CreateProductOutput{}, err
 	}
-	if !validProductInput(input.ProductName, input.PriceCent, input.Status) || input.InitialInventory < 0 {
+	if !validCreateProductInput(input.ProductName, input.PriceCent, input.Status) || input.InitialInventory < 0 {
 		return CreateProductOutput{}, ErrInvalidArgument
 	}
 	productID, err := s.repo.CreateProduct(ctx, repository.CreateProductParams{
@@ -291,6 +291,12 @@ func currentUser(ctx context.Context, role string) (auth.CurrentUser, error) {
 
 func validProductInput(name string, priceCent int64, status int) bool {
 	return strings.TrimSpace(name) != "" && priceCent > 0 && productdomain.ValidStatus(status)
+}
+
+func validCreateProductInput(name string, priceCent int64, status int) bool {
+	return strings.TrimSpace(name) != "" &&
+		priceCent > 0 &&
+		(status == productdomain.StatusOnSale || status == productdomain.StatusPreSale)
 }
 
 func nullString(value sql.NullString) string {
