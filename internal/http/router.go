@@ -59,5 +59,9 @@ func NewRouterWithServices(mysql handler.Pinger, redis handler.Pinger, authHandl
 }
 
 func registerWebRoutes(mux *http.ServeMux) {
-	mux.Handle("GET /", http.FileServer(http.Dir("web")))
+	fileServer := http.FileServer(http.Dir("web"))
+	mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		fileServer.ServeHTTP(w, r)
+	}))
 }
