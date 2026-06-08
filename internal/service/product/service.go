@@ -13,9 +13,10 @@ import (
 )
 
 var (
-	ErrUnauthenticated = errors.New("unauthenticated")
-	ErrInvalidArgument = errors.New("invalid argument")
-	ErrProductNotFound = errors.New("product not found")
+	ErrUnauthenticated      = errors.New("unauthenticated")
+	ErrInvalidArgument      = errors.New("invalid argument")
+	ErrProductNotFound      = errors.New("product not found")
+	ErrProductStatusInvalid = errors.New("product status invalid")
 )
 
 type Repository interface {
@@ -151,6 +152,9 @@ func (s *Service) UpdateProduct(ctx context.Context, input UpdateProductInput) e
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrProductNotFound
+	}
+	if errors.Is(err, repository.ErrProductStatusInvalid) {
+		return ErrProductStatusInvalid
 	}
 	return err
 }

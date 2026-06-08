@@ -76,6 +76,39 @@ func TestServiceCreateOrder_BitsUT(t *testing.T) {
 			t.Fatalf("error = %v, want ErrBalanceNotEnough", err)
 		}
 	})
+
+	t.Run("商品不可购买", func(t *testing.T) {
+		svc := NewService(&fakeRepo{err: repository.ErrProductNotBuyable})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
+
+		_, err := svc.CreateOrder(ctx, CreateOrderInput{ProductID: 3001, Quantity: 2, IdempotencyKey: "order-1"})
+
+		if err != ErrProductNotBuyable {
+			t.Fatalf("error = %v, want ErrProductNotBuyable", err)
+		}
+	})
+
+	t.Run("金额超过上限", func(t *testing.T) {
+		svc := NewService(&fakeRepo{err: repository.ErrOrderAmountTooLarge})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
+
+		_, err := svc.CreateOrder(ctx, CreateOrderInput{ProductID: 3001, Quantity: 2, IdempotencyKey: "order-1"})
+
+		if err != ErrInvalidArgument {
+			t.Fatalf("error = %v, want ErrInvalidArgument", err)
+		}
+	})
+
+	t.Run("幂等冲突", func(t *testing.T) {
+		svc := NewService(&fakeRepo{err: repository.ErrIdempotencyConflict})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 2001, Role: auth.RoleBuyer})
+
+		_, err := svc.CreateOrder(ctx, CreateOrderInput{ProductID: 3001, Quantity: 2, IdempotencyKey: "order-1"})
+
+		if err != ErrIdempotencyConflict {
+			t.Fatalf("error = %v, want ErrIdempotencyConflict", err)
+		}
+	})
 }
 
 func TestServiceListBuyerOrders_BitsUT(t *testing.T) {

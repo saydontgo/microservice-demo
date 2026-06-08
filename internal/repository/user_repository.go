@@ -67,16 +67,37 @@ WHERE user_id = ?`
 }
 
 func (r *UserRepository) RechargeBuyerBalance(ctx context.Context, userID int64, amountCent int64, idempotencyKey string) (int64, error) {
+	if idempotencyKey != "" {
+		balance, found, err := r.findExistingRechargePayment(ctx, userID, amountCent, idempotencyKey)
+		if err != nil {
+			return 0, err
+		}
+		if found {
+			return balance, nil
+		}
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	const insertTx = `
 INSERT INTO payment_transactions (user_id, type, amount_cent, status, idempotency_key)
 VALUES (?, 1, ?, 2, ?)`
 	if _, err := tx.ExecContext(ctx, insertTx, userID, amountCent, idempotencyKey); err != nil {
+		if isDuplicateKeyError(err) {
+			_ = tx.Rollback()
+			balance, found, replayErr := r.findExistingRechargePayment(ctx, userID, amountCent, idempotencyKey)
+			if replayErr != nil {
+				return 0, replayErr
+			}
+			if found {
+				return balance, nil
+			}
+			return 0, ErrIdempotencyConflict
+		}
 		return 0, err
 	}
 
@@ -93,6 +114,32 @@ WHERE user_id = ?`
 		return 0, err
 	}
 	return balance, tx.Commit()
+}
+
+func (r *UserRepository) findExistingRechargePayment(ctx context.Context, userID int64, amountCent int64, idempotencyKey string) (int64, bool, error) {
+	const query = `
+SELECT user_id, type, amount_cent, status
+FROM payment_transactions
+WHERE idempotency_key = ?
+LIMIT 1`
+	var existingUserID int64
+	var paymentType int
+	var existingAmountCent int64
+	var paymentStatus int
+	err := r.db.QueryRowContext(ctx, query, idempotencyKey).Scan(&existingUserID, &paymentType, &existingAmountCent, &paymentStatus)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if existingUserID != userID || paymentType != 1 || existingAmountCent != amountCent || paymentStatus != 2 {
+		return 0, false, ErrIdempotencyConflict
+	}
+
+	var balance int64
+	err = r.db.QueryRowContext(ctx, `SELECT balance_cent FROM buyer_profiles WHERE user_id = ?`, userID).Scan(&balance)
+	return balance, true, err
 }
 
 func (r *UserRepository) GetSellerProfile(ctx context.Context, userID int64) (SellerProfile, error) {

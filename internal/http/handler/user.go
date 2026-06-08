@@ -122,6 +122,8 @@ func writeUserError(w http.ResponseWriter, r *http.Request, err error) {
 		response.Error(w, r, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "登录凭证无效或已过期")
 	case errors.Is(err, usersvc.ErrProfileNotFound):
 		response.Error(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "用户资料不存在")
+	case errors.Is(err, usersvc.ErrIdempotencyConflict):
+		response.Error(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "幂等键重复但请求内容不同")
 	default:
 		response.Error(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误")
 	}

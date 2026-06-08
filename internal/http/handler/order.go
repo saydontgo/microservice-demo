@@ -46,7 +46,22 @@ func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *OrderHandler) ListBuyerOrders(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.ListBuyerOrders(r.Context(), queryInt(r, "page", 1), queryInt(r, "pageSize", 20), queryOptionalInt(r, "status"))
+	page, err := queryInt(r, "page", 1)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	pageSize, err := queryInt(r, "pageSize", 20)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	status, err := queryOptionalInt(r, "status")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	items, err := h.service.ListBuyerOrders(r.Context(), page, pageSize, status)
 	if err != nil {
 		writeOrderError(w, r, err)
 		return
@@ -109,6 +124,10 @@ func writeOrderError(w http.ResponseWriter, r *http.Request, err error) {
 		response.Error(w, r, http.StatusConflict, "PRODUCT_NOT_BUYABLE", "商品不可购买")
 	case errors.Is(err, ordersvc.ErrOrderStatusInvalid):
 		response.Error(w, r, http.StatusConflict, "ORDER_STATUS_INVALID", "订单状态不允许操作")
+	case errors.Is(err, ordersvc.ErrOrderNotFound), errors.Is(err, ordersvc.ErrProductNotFound):
+		response.Error(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "资源不存在")
+	case errors.Is(err, ordersvc.ErrIdempotencyConflict):
+		response.Error(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "幂等键重复但请求内容不同")
 	default:
 		response.Error(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误")
 	}

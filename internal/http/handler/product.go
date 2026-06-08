@@ -114,8 +114,16 @@ func (h *ProductHandler) AddInventory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProductHandler) SearchBuyerProducts(w http.ResponseWriter, r *http.Request) {
-	page := queryInt(r, "page", 1)
-	pageSize := queryInt(r, "pageSize", 20)
+	page, err := queryInt(r, "page", 1)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	pageSize, err := queryInt(r, "pageSize", 20)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
 	items, err := h.service.SearchBuyerProducts(r.Context(), r.URL.Query().Get("namePrefix"), page, pageSize)
 	if err != nil {
 		writeProductError(w, r, err)
@@ -125,15 +133,40 @@ func (h *ProductHandler) SearchBuyerProducts(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *ProductHandler) ListSellerProducts(w http.ResponseWriter, r *http.Request) {
+	status, err := queryOptionalInt(r, "status")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	productID, err := queryOptionalInt64(r, "productId")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	shipped, err := queryOptionalBool(r, "shipped")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	page, err := queryInt(r, "page", 1)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	pageSize, err := queryInt(r, "pageSize", 20)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
 	items, err := h.service.ListSellerProducts(r.Context(), productsvc.SellerProductListInput{
 		StartDate:         r.URL.Query().Get("startDate"),
 		EndDate:           r.URL.Query().Get("endDate"),
-		Status:            queryOptionalInt(r, "status"),
-		ProductID:         queryOptionalInt64(r, "productId"),
+		Status:            status,
+		ProductID:         productID,
 		ProductNamePrefix: r.URL.Query().Get("productNamePrefix"),
-		Shipped:           queryOptionalBool(r, "shipped"),
-		Page:              queryInt(r, "page", 1),
-		PageSize:          queryInt(r, "pageSize", 20),
+		Shipped:           shipped,
+		Page:              page,
+		PageSize:          pageSize,
 	})
 	if err != nil {
 		writeProductError(w, r, err)
@@ -143,10 +176,15 @@ func (h *ProductHandler) ListSellerProducts(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *ProductHandler) ListSellerTrend(w http.ResponseWriter, r *http.Request) {
+	days, err := queryInt(r, "days", 7)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
 	output, err := h.service.ListSellerTrend(r.Context(), productsvc.TrendInput{
 		StartDate: r.URL.Query().Get("startDate"),
 		EndDate:   r.URL.Query().Get("endDate"),
-		Days:      queryInt(r, "days", 7),
+		Days:      days,
 	})
 	if err != nil {
 		writeProductError(w, r, err)
@@ -177,6 +215,8 @@ func writeProductError(w http.ResponseWriter, r *http.Request, err error) {
 		response.Error(w, r, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "登录凭证无效或已过期")
 	case errors.Is(err, productsvc.ErrProductNotFound):
 		response.Error(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "商品不存在")
+	case errors.Is(err, productsvc.ErrProductStatusInvalid):
+		response.Error(w, r, http.StatusConflict, "PRODUCT_STATUS_INVALID", "商品状态不允许操作")
 	default:
 		response.Error(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误")
 	}
@@ -187,47 +227,58 @@ func pathInt64(r *http.Request, name string) (int64, bool) {
 	return value, err == nil && value > 0
 }
 
-func queryInt(r *http.Request, name string, fallback int) int {
+func queryInt(r *http.Request, name string, fallback int) (int, error) {
 	value := r.URL.Query().Get(name)
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		return fallback
+		return 0, err
 	}
-	return parsed
+	return parsed, nil
 }
 
-func queryOptionalInt(r *http.Request, name string) *int {
+func queryOptionalInt(r *http.Request, name string) (*int, error) {
 	value := r.URL.Query().Get(name)
 	if value == "" {
-		return nil
+		return nil, nil
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return &parsed
+	return &parsed, nil
 }
 
-func queryOptionalInt64(r *http.Request, name string) *int64 {
+func queryOptionalInt64(r *http.Request, name string) (*int64, error) {
 	value := r.URL.Query().Get(name)
 	if value == "" {
-		return nil
+		return nil, nil
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return nil
+	if err != nil || parsed <= 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, strconv.ErrSyntax
 	}
-	return &parsed
+	return &parsed, nil
 }
 
-func queryOptionalBool(r *http.Request, name string) *bool {
+func queryOptionalBool(r *http.Request, name string) (*bool, error) {
 	value := strings.ToLower(r.URL.Query().Get(name))
 	if value == "" {
-		return nil
+		return nil, nil
 	}
-	parsed := value == "true" || value == "1"
-	return &parsed
+	switch value {
+	case "true", "1":
+		parsed := true
+		return &parsed, nil
+	case "false", "0":
+		parsed := false
+		return &parsed, nil
+	default:
+		return nil, strconv.ErrSyntax
+	}
 }

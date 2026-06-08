@@ -19,6 +19,7 @@ type fakeRepo struct {
 	trends         []repository.TrendPoint
 	available      int
 	delistStatus   int
+	updateErr      error
 }
 
 func (r *fakeRepo) CreateProduct(_ context.Context, params repository.CreateProductParams) (int64, error) {
@@ -28,7 +29,7 @@ func (r *fakeRepo) CreateProduct(_ context.Context, params repository.CreateProd
 
 func (r *fakeRepo) UpdateProduct(_ context.Context, params repository.UpdateProductParams) error {
 	r.updateIn = params
-	return nil
+	return r.updateErr
 }
 
 func (r *fakeRepo) AddInventory(context.Context, int64, int64, int) (int, error) {
@@ -75,6 +76,17 @@ func TestServiceCreateProductRejectUnavailableStatus_BitsUT(t *testing.T) {
 
 	if err != ErrInvalidArgument {
 		t.Fatalf("error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestServiceUpdateProductStatusInvalid_BitsUT(t *testing.T) {
+	svc := NewService(&fakeRepo{updateErr: repository.ErrProductStatusInvalid})
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+
+	err := svc.UpdateProduct(ctx, UpdateProductInput{ProductID: 3001, ProductName: "手机壳", PriceCent: 1999, Status: productdomain.StatusOffShelf})
+
+	if err != ErrProductStatusInvalid {
+		t.Fatalf("error = %v, want ErrProductStatusInvalid", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package ordersvc
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 
@@ -11,12 +12,15 @@ import (
 )
 
 var (
-	ErrUnauthenticated    = errors.New("unauthenticated")
-	ErrInvalidArgument    = errors.New("invalid argument")
-	ErrBalanceNotEnough   = errors.New("balance not enough")
-	ErrInventoryNotEnough = errors.New("inventory not enough")
-	ErrProductNotBuyable  = errors.New("product not buyable")
-	ErrOrderStatusInvalid = errors.New("order status invalid")
+	ErrUnauthenticated     = errors.New("unauthenticated")
+	ErrInvalidArgument     = errors.New("invalid argument")
+	ErrBalanceNotEnough    = errors.New("balance not enough")
+	ErrInventoryNotEnough  = errors.New("inventory not enough")
+	ErrProductNotBuyable   = errors.New("product not buyable")
+	ErrOrderStatusInvalid  = errors.New("order status invalid")
+	ErrOrderNotFound       = errors.New("order not found")
+	ErrProductNotFound     = errors.New("product not found")
+	ErrIdempotencyConflict = errors.New("idempotency conflict")
 )
 
 type Repository interface {
@@ -93,6 +97,15 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Crea
 	if errors.Is(err, repository.ErrInventoryNotEnough) {
 		return CreateOrderOutput{}, ErrInventoryNotEnough
 	}
+	if errors.Is(err, repository.ErrProductNotBuyable) {
+		return CreateOrderOutput{}, ErrProductNotBuyable
+	}
+	if errors.Is(err, repository.ErrOrderAmountTooLarge) {
+		return CreateOrderOutput{}, ErrInvalidArgument
+	}
+	if errors.Is(err, repository.ErrIdempotencyConflict) {
+		return CreateOrderOutput{}, ErrIdempotencyConflict
+	}
 	if err != nil {
 		return CreateOrderOutput{}, err
 	}
@@ -147,6 +160,12 @@ func (s *Service) RefundOrder(ctx context.Context, orderID int64, idempotencyKey
 	if errors.Is(err, repository.ErrOrderStatusInvalid) {
 		return RefundOutput{}, ErrOrderStatusInvalid
 	}
+	if errors.Is(err, repository.ErrIdempotencyConflict) {
+		return RefundOutput{}, ErrIdempotencyConflict
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return RefundOutput{}, ErrOrderNotFound
+	}
 	if err != nil {
 		return RefundOutput{}, err
 	}
@@ -165,6 +184,9 @@ func (s *Service) ReceiveOrder(ctx context.Context, orderID int64) error {
 	if errors.Is(err, repository.ErrOrderStatusInvalid) {
 		return ErrOrderStatusInvalid
 	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrOrderNotFound
+	}
 	return err
 }
 
@@ -179,6 +201,9 @@ func (s *Service) ShipProductOrders(ctx context.Context, productID int64) (ShipO
 	orderCount, quantity, remaining, err := s.repo.ShipProductOrders(ctx, user.ID, productID)
 	if errors.Is(err, repository.ErrInventoryNotEnough) {
 		return ShipOutput{}, ErrInventoryNotEnough
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return ShipOutput{}, ErrProductNotFound
 	}
 	if err != nil {
 		return ShipOutput{}, err

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	orderdomain "microservice-demo/internal/domain/order"
@@ -37,11 +38,21 @@ func NewOrderRepository(db *sql.DB) *OrderRepository {
 }
 
 func (r *OrderRepository) CreateOrder(ctx context.Context, params CreateOrderParams) (int64, int64, error) {
+	if params.IdempotencyKey != "" {
+		orderID, balance, found, err := r.findExistingOrderPayment(ctx, params)
+		if err != nil {
+			return 0, 0, err
+		}
+		if found {
+			return orderID, balance, nil
+		}
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var sellerID int64
 	var productName string
@@ -53,10 +64,16 @@ FROM products
 WHERE id = ? AND is_deleted = 0
 FOR UPDATE`
 	if err := tx.QueryRowContext(ctx, productQuery, params.ProductID).Scan(&sellerID, &productName, &unitPriceCent, &productStatus); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, 0, ErrProductNotBuyable
+		}
 		return 0, 0, err
 	}
 	if productStatus != productdomain.StatusOnSale && productStatus != productdomain.StatusPreSale {
-		return 0, 0, sql.ErrNoRows
+		return 0, 0, ErrProductNotBuyable
+	}
+	if params.Quantity <= 0 || unitPriceCent > orderdomain.MaxOrderAmountCent/int64(params.Quantity) {
+		return 0, 0, ErrOrderAmountTooLarge
 	}
 
 	totalAmount := unitPriceCent * int64(params.Quantity)
@@ -105,6 +122,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`
 INSERT INTO payment_transactions (user_id, order_id, type, amount_cent, status, idempotency_key)
 VALUES (?, ?, 2, ?, 2, ?)`
 	if _, err := tx.ExecContext(ctx, insertPayment, params.BuyerID, orderID, totalAmount, params.IdempotencyKey); err != nil {
+		if isDuplicateKeyError(err) {
+			_ = tx.Rollback()
+			orderID, balance, found, replayErr := r.findExistingOrderPayment(ctx, params)
+			if replayErr != nil {
+				return 0, 0, replayErr
+			}
+			if found {
+				return orderID, balance, nil
+			}
+			return 0, 0, ErrIdempotencyConflict
+		}
 		return 0, 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE seller_profiles SET total_deal_amount_cent = total_deal_amount_cent + ? WHERE user_id = ?`, totalAmount, sellerID); err != nil {
@@ -131,22 +159,28 @@ ON DUPLICATE KEY UPDATE deal_amount_cent = deal_amount_cent + VALUES(deal_amount
 }
 
 func (r *OrderRepository) ListBuyerOrders(ctx context.Context, buyerID int64, statuses []int, limit, offset int) ([]Order, error) {
-	if len(statuses) == 1 {
-		const query = `
-SELECT id, product_id, product_name_snapshot, quantity, total_amount_cent, refund_amount_cent, status, created_at, shipped_at
-FROM orders
-WHERE buyer_id = ? AND status = ?
-ORDER BY created_at DESC
-LIMIT ? OFFSET ?`
-		return r.queryBuyerOrders(ctx, query, buyerID, statuses[0], limit, offset)
+	if len(statuses) == 0 {
+		return nil, ErrOrderStatusInvalid
 	}
-	const query = `
+
+	var query strings.Builder
+	query.WriteString(`
 SELECT id, product_id, product_name_snapshot, quantity, total_amount_cent, refund_amount_cent, status, created_at, shipped_at
 FROM orders
-WHERE buyer_id = ? AND status IN (?, ?)
+WHERE buyer_id = ? AND status IN (`)
+	args := []any{buyerID}
+	for i, status := range statuses {
+		if i > 0 {
+			query.WriteString(", ")
+		}
+		query.WriteString("?")
+		args = append(args, status)
+	}
+	query.WriteString(`)
 ORDER BY created_at DESC
-LIMIT ? OFFSET ?`
-	return r.queryBuyerOrders(ctx, query, buyerID, statuses[0], statuses[1], limit, offset)
+LIMIT ? OFFSET ?`)
+	args = append(args, limit, offset)
+	return r.queryBuyerOrders(ctx, query.String(), args...)
 }
 
 func (r *OrderRepository) queryBuyerOrders(ctx context.Context, query string, args ...any) ([]Order, error) {
@@ -167,12 +201,96 @@ func (r *OrderRepository) queryBuyerOrders(ctx context.Context, query string, ar
 	return orders, rows.Err()
 }
 
+func (r *OrderRepository) findExistingOrderPayment(ctx context.Context, params CreateOrderParams) (int64, int64, bool, error) {
+	const query = `
+SELECT p.user_id, p.order_id, p.type, p.status, o.product_id, o.quantity
+FROM payment_transactions p
+LEFT JOIN orders o ON o.id = p.order_id
+WHERE p.idempotency_key = ?
+LIMIT 1`
+	var userID int64
+	var orderID sql.NullInt64
+	var paymentType int
+	var paymentStatus int
+	var productID sql.NullInt64
+	var quantity sql.NullInt64
+	err := r.db.QueryRowContext(ctx, query, params.IdempotencyKey).Scan(&userID, &orderID, &paymentType, &paymentStatus, &productID, &quantity)
+	if err == sql.ErrNoRows {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if userID != params.BuyerID ||
+		paymentType != 2 ||
+		paymentStatus != 2 ||
+		!orderID.Valid ||
+		!productID.Valid ||
+		productID.Int64 != params.ProductID ||
+		!quantity.Valid ||
+		int(quantity.Int64) != params.Quantity {
+		return 0, 0, false, ErrIdempotencyConflict
+	}
+	balance, err := r.buyerBalance(ctx, params.BuyerID)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return orderID.Int64, balance, true, nil
+}
+
+func (r *OrderRepository) findExistingRefundPayment(ctx context.Context, buyerID, orderID int64, idempotencyKey string) (int64, bool, error) {
+	const query = `
+SELECT user_id, order_id, type, status
+FROM payment_transactions
+WHERE idempotency_key = ?
+LIMIT 1`
+	var userID int64
+	var existingOrderID sql.NullInt64
+	var paymentType int
+	var paymentStatus int
+	err := r.db.QueryRowContext(ctx, query, idempotencyKey).Scan(&userID, &existingOrderID, &paymentType, &paymentStatus)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if userID != buyerID ||
+		paymentType != 3 ||
+		paymentStatus != 2 ||
+		!existingOrderID.Valid ||
+		existingOrderID.Int64 != orderID {
+		return 0, false, ErrIdempotencyConflict
+	}
+	balance, err := r.buyerBalance(ctx, buyerID)
+	if err != nil {
+		return 0, false, err
+	}
+	return balance, true, nil
+}
+
+func (r *OrderRepository) buyerBalance(ctx context.Context, buyerID int64) (int64, error) {
+	var balance int64
+	err := r.db.QueryRowContext(ctx, `SELECT balance_cent FROM buyer_profiles WHERE user_id = ?`, buyerID).Scan(&balance)
+	return balance, err
+}
+
 func (r *OrderRepository) RefundOrder(ctx context.Context, buyerID, orderID int64, idempotencyKey string) (int64, error) {
+	if idempotencyKey != "" {
+		balance, found, err := r.findExistingRefundPayment(ctx, buyerID, orderID, idempotencyKey)
+		if err != nil {
+			return 0, err
+		}
+		if found {
+			return balance, nil
+		}
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var sellerID int64
 	var productID int64
@@ -195,6 +313,17 @@ FOR UPDATE`
 INSERT INTO payment_transactions (user_id, order_id, type, amount_cent, status, idempotency_key)
 VALUES (?, ?, 3, ?, 2, ?)`
 	if _, err := tx.ExecContext(ctx, insertRefund, buyerID, orderID, amountCent, idempotencyKey); err != nil {
+		if isDuplicateKeyError(err) {
+			_ = tx.Rollback()
+			balance, found, replayErr := r.findExistingRefundPayment(ctx, buyerID, orderID, idempotencyKey)
+			if replayErr != nil {
+				return 0, replayErr
+			}
+			if found {
+				return balance, nil
+			}
+			return 0, ErrIdempotencyConflict
+		}
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE buyer_profiles SET balance_cent = balance_cent + ? WHERE user_id = ?`, amountCent, buyerID); err != nil {

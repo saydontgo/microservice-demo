@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	orderdomain "microservice-demo/internal/domain/order"
+	productdomain "microservice-demo/internal/domain/product"
 )
 
 type ProductRepository struct {
@@ -99,11 +102,32 @@ VALUES (?, ?, 0, 0)`
 }
 
 func (r *ProductRepository) UpdateProduct(ctx context.Context, params UpdateProductParams) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentStatus int
+	var available int
+	const selectProduct = `
+SELECT p.status, i.available_quantity
+FROM products p
+JOIN product_inventory i ON i.product_id = p.id
+WHERE p.id = ? AND p.seller_id = ? AND p.is_deleted = 0
+FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, selectProduct, params.ProductID, params.SellerID).Scan(&currentStatus, &available); err != nil {
+		return err
+	}
+	if err := validateProductStatusTransition(ctx, tx, params.SellerID, params.ProductID, currentStatus, params.Status, available); err != nil {
+		return err
+	}
+
 	const query = `
 UPDATE products
 SET product_name = ?, description = ?, price_cent = ?, status = ?
 WHERE id = ? AND seller_id = ? AND is_deleted = 0`
-	result, err := r.db.ExecContext(ctx, query, params.ProductName, nullable(params.Description), params.PriceCent, params.Status, params.ProductID, params.SellerID)
+	result, err := tx.ExecContext(ctx, query, params.ProductName, nullable(params.Description), params.PriceCent, params.Status, params.ProductID, params.SellerID)
 	if err != nil {
 		return err
 	}
@@ -114,7 +138,42 @@ WHERE id = ? AND seller_id = ? AND is_deleted = 0`
 	if rows == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
+}
+
+func validateProductStatusTransition(ctx context.Context, tx *sql.Tx, sellerID, productID int64, currentStatus, nextStatus, available int) error {
+	if currentStatus == nextStatus {
+		return nil
+	}
+	switch {
+	case currentStatus == productdomain.StatusPreSale && nextStatus == productdomain.StatusOnSale:
+		if available <= 0 {
+			return ErrProductStatusInvalid
+		}
+		return nil
+	case currentStatus == productdomain.StatusOnSale && nextStatus == productdomain.StatusDelisting:
+		return nil
+	case currentStatus == productdomain.StatusDelisting && nextStatus == productdomain.StatusOffShelf:
+		var unfinishedCount int
+		const countOrders = `
+SELECT COUNT(*)
+FROM orders
+WHERE product_id = ? AND seller_id = ? AND status IN (?, ?)`
+		if err := tx.QueryRowContext(ctx, countOrders, productID, sellerID, orderdomain.StatusPlacedUnshipped, orderdomain.StatusShipping).Scan(&unfinishedCount); err != nil {
+			return err
+		}
+		if unfinishedCount > 0 {
+			return ErrProductStatusInvalid
+		}
+		return nil
+	case currentStatus == productdomain.StatusOffShelf && nextStatus == productdomain.StatusOnSale:
+		if available <= 0 {
+			return ErrProductStatusInvalid
+		}
+		return nil
+	default:
+		return ErrProductStatusInvalid
+	}
 }
 
 func (r *ProductRepository) AddInventory(ctx context.Context, sellerID, productID int64, quantity int) (int, error) {
@@ -274,23 +333,23 @@ func (r *ProductRepository) DelistProduct(ctx context.Context, sellerID, product
 	const productQuery = `
 SELECT status
 FROM products
-WHERE id = ? AND seller_id = ? AND status = 1 AND is_deleted = 0
+WHERE id = ? AND seller_id = ? AND status = ? AND is_deleted = 0
 FOR UPDATE`
-	if err := tx.QueryRowContext(ctx, productQuery, productID, sellerID).Scan(&status); err != nil {
+	if err := tx.QueryRowContext(ctx, productQuery, productID, sellerID, productdomain.StatusOnSale).Scan(&status); err != nil {
 		return 0, err
 	}
 
-	nextStatus := 3
+	nextStatus := productdomain.StatusDelisting
 	var unfinishedCount int
 	const orderQuery = `
 SELECT COUNT(*)
 FROM orders
-WHERE product_id = ? AND seller_id = ? AND status IN (1, 2)`
-	if err := tx.QueryRowContext(ctx, orderQuery, productID, sellerID).Scan(&unfinishedCount); err != nil {
+WHERE product_id = ? AND seller_id = ? AND status IN (?, ?)`
+	if err := tx.QueryRowContext(ctx, orderQuery, productID, sellerID, orderdomain.StatusPlacedUnshipped, orderdomain.StatusShipping).Scan(&unfinishedCount); err != nil {
 		return 0, err
 	}
 	if unfinishedCount == 0 {
-		nextStatus = 4
+		nextStatus = productdomain.StatusOffShelf
 	}
 
 	const updateQuery = `

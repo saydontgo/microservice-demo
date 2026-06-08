@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	ErrUnauthenticated = errors.New("unauthenticated")
-	ErrInvalidArgument = errors.New("invalid argument")
-	ErrProfileNotFound = errors.New("profile not found")
+	ErrUnauthenticated     = errors.New("unauthenticated")
+	ErrInvalidArgument     = errors.New("invalid argument")
+	ErrProfileNotFound     = errors.New("profile not found")
+	ErrIdempotencyConflict = errors.New("idempotency conflict")
 )
 
 type Repository interface {
@@ -116,6 +117,9 @@ func (s *Service) RechargeBuyerBalance(ctx context.Context, amountCent int64, id
 		return RechargeOutput{}, ErrInvalidArgument
 	}
 	balance, err := s.repo.RechargeBuyerBalance(ctx, user.ID, amountCent, idempotencyKey)
+	if errors.Is(err, repository.ErrIdempotencyConflict) {
+		return RechargeOutput{}, ErrIdempotencyConflict
+	}
 	return RechargeOutput{BalanceCent: balance}, err
 }
 

@@ -10,11 +10,12 @@ import (
 )
 
 type fakeRepo struct {
-	buyer      repository.BuyerProfile
-	seller     repository.SellerProfile
-	buyerIn    repository.UpdateBuyerProfileParams
-	sellerIn   repository.UpdateSellerProfileParams
-	rechargeID int64
+	buyer       repository.BuyerProfile
+	seller      repository.SellerProfile
+	buyerIn     repository.UpdateBuyerProfileParams
+	sellerIn    repository.UpdateSellerProfileParams
+	rechargeID  int64
+	rechargeErr error
 }
 
 func (r *fakeRepo) GetBuyerProfile(context.Context, int64) (repository.BuyerProfile, error) {
@@ -27,7 +28,7 @@ func (r *fakeRepo) UpdateBuyerProfile(_ context.Context, params repository.Updat
 }
 
 func (r *fakeRepo) RechargeBuyerBalance(context.Context, int64, int64, string) (int64, error) {
-	return r.rechargeID, nil
+	return r.rechargeID, r.rechargeErr
 }
 
 func (r *fakeRepo) GetSellerProfile(context.Context, int64) (repository.SellerProfile, error) {
@@ -93,6 +94,17 @@ func TestServiceRechargeBuyerBalance_BitsUT(t *testing.T) {
 
 		if err != ErrInvalidArgument {
 			t.Fatalf("error = %v, want ErrInvalidArgument", err)
+		}
+	})
+
+	t.Run("幂等冲突", func(t *testing.T) {
+		svc := NewService(&fakeRepo{rechargeErr: repository.ErrIdempotencyConflict})
+		ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 10, Role: auth.RoleBuyer})
+
+		_, err := svc.RechargeBuyerBalance(ctx, 100, "idem-1")
+
+		if err != ErrIdempotencyConflict {
+			t.Fatalf("error = %v, want ErrIdempotencyConflict", err)
 		}
 	})
 }
