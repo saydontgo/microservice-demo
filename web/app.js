@@ -32,6 +32,8 @@ const state = {
   sellerProducts: [],
   trendPoints: [],
   trendHoverIndex: -1,
+  trendStartDate: "",
+  trendEndDate: "",
   loading: false,
 };
 
@@ -169,12 +171,52 @@ async function refreshSellerProducts(params = {}) {
   state.sellerProducts = data.items || [];
 }
 
-async function refreshTrend(days = 7) {
-  const data = await apiFetch(`/api/seller/trends${qs({ days })}`);
+async function refreshTrend(input = {}) {
+  const options = typeof input === "number" ? { days: input } : input;
+  const range = normalizeTrendRange(options);
+  const data = await apiFetch(`/api/seller/trends${qs({ startDate: range.startDate, endDate: range.endDate })}`);
+  state.trendStartDate = range.startDate;
+  state.trendEndDate = range.endDate;
   state.trendPoints = data.points || [];
   state.trendHoverIndex = -1;
   hideTrendTooltip();
   window.setTimeout(drawTrendChart, 0);
+}
+
+function normalizeTrendRange(options = {}) {
+  const today = localDateString();
+  const days = Number(options.days) > 0 ? Math.min(Number(options.days), 90) : 7;
+  let endDate = options.endDate || state.trendEndDate || today;
+  let startDate = options.startDate || state.trendStartDate || addDays(endDate, -days + 1);
+  if (endDate > today) {
+    throw new Error("只能查看今天及以前的数据");
+  }
+  if (startDate > endDate) {
+    throw new Error("开始日期不能晚于结束日期");
+  }
+  if (daysBetween(startDate, endDate) > 90) {
+    throw new Error("日期范围不能超过 90 天");
+  }
+  return { startDate, endDate };
+}
+
+function localDateString(date = new Date()) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function dateToUTC(dateText) {
+  const [year, month, day] = String(dateText).split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+function addDays(dateText, offset) {
+  const date = new Date(dateToUTC(dateText) + offset * 86400000);
+  return date.toISOString().slice(0, 10);
+}
+
+function daysBetween(startDate, endDate) {
+  return Math.floor((dateToUTC(endDate) - dateToUTC(startDate)) / 86400000) + 1;
 }
 
 function render() {
@@ -431,6 +473,9 @@ function renderBuyerSettings() {
 }
 
 function renderSellerProducts() {
+  const today = localDateString();
+  const trendEndDate = state.trendEndDate || today;
+  const trendStartDate = state.trendStartDate || addDays(trendEndDate, -6);
   return `
     <div class="dashboard-cards">
       <div class="stat-card"><span class="subtle">店铺成交总额</span><strong>${money(state.sellerProfile?.totalDealAmountCent)}</strong></div>
@@ -440,7 +485,11 @@ function renderSellerProducts() {
     <div class="card">
       <div class="section-title">
         <div><h2>趋势图</h2><span class="subtle">成交金额、退款金额、退款率</span></div>
-        <form class="row-actions" data-form="seller-trend"><input name="days" type="number" min="1" max="90" value="7" /><button class="ghost" type="submit">刷新趋势</button></form>
+        <form class="row-actions" data-form="seller-trend">
+          <input name="startDate" type="date" max="${today}" value="${trendStartDate}" />
+          <input name="endDate" type="date" max="${today}" value="${trendEndDate}" />
+          <button class="ghost" type="submit">刷新趋势</button>
+        </form>
       </div>
       <div class="chart-panel">
         <div class="chart-legend">
@@ -754,7 +803,7 @@ document.addEventListener("submit", (event) => {
     if (type === "buyer-recharge") await submitRecharge(data);
     if (type === "seller-create-product") await submitCreateProduct(data);
     if (type === "seller-search-products") await refreshSellerProducts(data);
-    if (type === "seller-trend") await refreshTrend(Number(data.days) || 7);
+    if (type === "seller-trend") await refreshTrend({ startDate: data.startDate, endDate: data.endDate });
     if (type === "seller-profile") await submitSellerProfile(data);
   });
 });

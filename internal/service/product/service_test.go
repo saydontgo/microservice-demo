@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"microservice-demo/internal/domain/auth"
 	productdomain "microservice-demo/internal/domain/product"
@@ -163,6 +164,18 @@ func TestServiceListSellerTrend_BitsUT(t *testing.T) {
 	}
 	if len(got.Points) != 3 || got.Points[0].DealAmountCent != 0 || got.Points[1].RefundRate != 0.1 {
 		t.Fatalf("ListSellerTrend() = %+v", got)
+	}
+}
+
+func TestServiceListSellerTrendRejectFutureRange_BitsUT(t *testing.T) {
+	svc := NewService(&fakeRepo{})
+	ctx := auth.WithCurrentUser(context.Background(), auth.CurrentUser{ID: 1001, Role: auth.RoleSeller})
+	futureDate := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+
+	_, err := svc.ListSellerTrend(ctx, TrendInput{StartDate: futureDate, EndDate: futureDate})
+
+	if err != ErrInvalidArgument {
+		t.Fatalf("error = %v, want ErrInvalidArgument", err)
 	}
 }
 

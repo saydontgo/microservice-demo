@@ -311,17 +311,19 @@ func nullString(value sql.NullString) string {
 }
 
 func dateRange(startDate string, endDate string, defaultDays int) (string, string, error) {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	if startDate == "" && endDate == "" {
-		end := time.Now()
+		end := today
 		start := end.AddDate(0, 0, -defaultDays+1)
 		return start.Format("2006-01-02"), end.Format("2006-01-02"), nil
 	}
-	start, err := time.Parse("2006-01-02", startDate)
+	start, err := time.ParseInLocation("2006-01-02", startDate, today.Location())
 	if err != nil {
 		return "", "", err
 	}
-	end, err := time.Parse("2006-01-02", endDate)
-	if err != nil || end.Before(start) {
+	end, err := time.ParseInLocation("2006-01-02", endDate, today.Location())
+	if err != nil || end.Before(start) || start.After(today) || end.After(today) {
 		return "", "", ErrInvalidArgument
 	}
 	return start.Format("2006-01-02"), end.Format("2006-01-02"), nil
