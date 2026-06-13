@@ -167,8 +167,26 @@ async function refreshBuyerOrders(params = {}) {
 }
 
 async function refreshSellerProducts(params = {}) {
-  const data = await apiFetch(`/api/seller/products${qs({ ...params, page: 1, pageSize: 50 })}`);
+  const filter = validateSellerProductFilter(params);
+  const data = await apiFetch(`/api/seller/products${qs({ ...filter, page: 1, pageSize: 50 })}`);
   state.sellerProducts = data.items || [];
+}
+
+function validateSellerProductFilter(params = {}) {
+  const startDate = params.startDate || "";
+  const endDate = params.endDate || "";
+  if (!startDate && !endDate) return params;
+  const today = localDateString();
+  if (!startDate || !endDate) {
+    throw new Error("商品筛选需要同时选择开始日期和结束日期");
+  }
+  if (endDate > today || startDate > today) {
+    throw new Error("商品筛选只能查看今天及以前的数据");
+  }
+  if (startDate > endDate) {
+    throw new Error("开始日期不能晚于结束日期");
+  }
+  return params;
 }
 
 async function refreshTrend(input = {}) {
@@ -186,8 +204,15 @@ async function refreshTrend(input = {}) {
 function normalizeTrendRange(options = {}) {
   const today = localDateString();
   const days = Number(options.days) > 0 ? Math.min(Number(options.days), 90) : 7;
-  let endDate = options.endDate || state.trendEndDate || today;
-  let startDate = options.startDate || state.trendStartDate || addDays(endDate, -days + 1);
+  let startDate = options.startDate ?? "";
+  let endDate = options.endDate ?? "";
+  if (!startDate && !endDate) {
+    endDate = state.trendEndDate || today;
+    startDate = state.trendStartDate || addDays(endDate, -days + 1);
+  }
+  if (!startDate || !endDate) {
+    throw new Error("请选择完整的日期范围");
+  }
   if (endDate > today) {
     throw new Error("只能查看今天及以前的数据");
   }
@@ -485,9 +510,15 @@ function renderSellerProducts() {
     <div class="card">
       <div class="section-title">
         <div><h2>趋势图</h2><span class="subtle">成交金额、退款金额、退款率</span></div>
-        <form class="row-actions" data-form="seller-trend">
-          <input name="startDate" type="date" max="${today}" value="${trendStartDate}" />
-          <input name="endDate" type="date" max="${today}" value="${trendEndDate}" />
+        <form class="trend-range" data-form="seller-trend">
+          <div class="field">
+            <label>开始日期</label>
+            <input name="startDate" type="date" max="${today}" value="${trendStartDate}" required />
+          </div>
+          <div class="field">
+            <label>结束日期</label>
+            <input name="endDate" type="date" max="${today}" value="${trendEndDate}" required />
+          </div>
           <button class="ghost" type="submit">刷新趋势</button>
         </form>
       </div>
@@ -515,8 +546,8 @@ function renderSellerProducts() {
     <div class="card">
       <div class="section-title"><h2>商品筛选</h2></div>
       <form class="toolbar" data-form="seller-search-products">
-        <div class="field"><label>开始日期</label><input name="startDate" type="date" /></div>
-        <div class="field"><label>结束日期</label><input name="endDate" type="date" /></div>
+        <div class="field"><label>开始日期</label><input name="startDate" type="date" max="${today}" /></div>
+        <div class="field"><label>结束日期</label><input name="endDate" type="date" max="${today}" /></div>
         <div class="field"><label>状态</label>${productStatusSelect("status", "")}</div>
         <div class="field"><label>商品 ID</label><input name="productId" type="number" /></div>
         <div class="field"><label>商品名前缀</label><input name="productNamePrefix" /></div>

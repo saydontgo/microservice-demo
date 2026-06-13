@@ -362,6 +362,14 @@ body.dark .field textarea {
   align-items: end;
 }
 
+.trend-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  min-width: min(100%, 460px);
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid var(--line);
@@ -554,6 +562,7 @@ tr:last-child td {
   }
 
   .toolbar,
+  .trend-range,
   .form-grid,
   .dashboard-cards,
   .metric-strip {
