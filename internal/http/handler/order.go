@@ -13,8 +13,10 @@ import (
 type OrderService interface {
 	CreateOrder(ctx context.Context, input ordersvc.CreateOrderInput) (ordersvc.CreateOrderOutput, error)
 	ListBuyerOrders(ctx context.Context, page, pageSize int, status *int) ([]ordersvc.OrderOutput, error)
+	ListSellerOrders(ctx context.Context, input ordersvc.SellerOrderListInput) ([]ordersvc.SellerOrderOutput, error)
 	RefundOrder(ctx context.Context, orderID int64, idempotencyKey string) (ordersvc.RefundOutput, error)
 	ReceiveOrder(ctx context.Context, orderID int64) error
+	ShipSellerOrder(ctx context.Context, orderID int64) (ordersvc.ShipOrderOutput, error)
 	ShipProductOrders(ctx context.Context, productID int64) (ordersvc.ShipOutput, error)
 }
 
@@ -69,6 +71,35 @@ func (h *OrderHandler) ListBuyerOrders(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
 }
 
+func (h *OrderHandler) ListSellerOrders(w http.ResponseWriter, r *http.Request) {
+	page, err := queryInt(r, "page", 1)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	pageSize, err := queryInt(r, "pageSize", 20)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	productID, err := queryOptionalInt64(r, "productId")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "参数校验失败")
+		return
+	}
+	items, err := h.service.ListSellerOrders(r.Context(), ordersvc.SellerOrderListInput{
+		ProductID:         productID,
+		ProductNamePrefix: r.URL.Query().Get("productNamePrefix"),
+		Page:              page,
+		PageSize:          pageSize,
+	})
+	if err != nil {
+		writeOrderError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
+}
+
 func (h *OrderHandler) RefundOrder(w http.ResponseWriter, r *http.Request) {
 	orderID, ok := pathInt64(r, "orderId")
 	if !ok {
@@ -94,6 +125,20 @@ func (h *OrderHandler) ReceiveOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.JSON(w, r, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (h *OrderHandler) ShipSellerOrder(w http.ResponseWriter, r *http.Request) {
+	orderID, ok := pathInt64(r, "orderId")
+	if !ok {
+		response.Error(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "订单 ID 不合法")
+		return
+	}
+	output, err := h.service.ShipSellerOrder(r.Context(), orderID)
+	if err != nil {
+		writeOrderError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, output)
 }
 
 func (h *OrderHandler) ShipProductOrders(w http.ResponseWriter, r *http.Request) {

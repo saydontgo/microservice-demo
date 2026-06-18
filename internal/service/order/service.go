@@ -26,8 +26,10 @@ var (
 type Repository interface {
 	CreateOrder(ctx context.Context, params repository.CreateOrderParams) (int64, int64, error)
 	ListBuyerOrders(ctx context.Context, buyerID int64, statuses []int, limit, offset int) ([]repository.Order, error)
+	ListSellerOrders(ctx context.Context, filter repository.SellerOrderFilter) ([]repository.SellerOrder, error)
 	RefundOrder(ctx context.Context, buyerID, orderID int64, idempotencyKey string) (int64, error)
 	ReceiveOrder(ctx context.Context, buyerID, orderID int64) error
+	ShipSellerOrder(ctx context.Context, sellerID, orderID int64) (int64, int, int, error)
 	ShipProductOrders(ctx context.Context, sellerID, productID int64) (int, int, int, error)
 }
 
@@ -39,6 +41,13 @@ type CreateOrderInput struct {
 	ProductID      int64
 	Quantity       int
 	IdempotencyKey string
+}
+
+type SellerOrderListInput struct {
+	ProductID         *int64
+	ProductNamePrefix string
+	Page              int
+	PageSize          int
 }
 
 type CreateOrderOutput struct {
@@ -60,6 +69,22 @@ type OrderOutput struct {
 	CreatedAt           string `json:"createdAt"`
 }
 
+type SellerOrderOutput struct {
+	OrderID             int64  `json:"orderId"`
+	BuyerID             int64  `json:"buyerId"`
+	ProductID           int64  `json:"productId"`
+	ProductNameSnapshot string `json:"productNameSnapshot"`
+	Quantity            int    `json:"quantity"`
+	TotalAmountCent     int64  `json:"totalAmountCent"`
+	RefundAmountCent    int64  `json:"refundAmountCent"`
+	Status              int    `json:"status"`
+	StatusName          string `json:"statusName"`
+	CreatedAt           string `json:"createdAt"`
+	ShippedAt           string `json:"shippedAt,omitempty"`
+	ReceivedAt          string `json:"receivedAt,omitempty"`
+	RefundedAt          string `json:"refundedAt,omitempty"`
+}
+
 type RefundOutput struct {
 	OrderID     int64 `json:"orderId"`
 	Status      int   `json:"status"`
@@ -69,6 +94,14 @@ type RefundOutput struct {
 type ShipOutput struct {
 	ProductID          int64 `json:"productId"`
 	ShippedOrderCount  int   `json:"shippedOrderCount"`
+	ShippedQuantity    int   `json:"shippedQuantity"`
+	RemainingInventory int   `json:"remainingInventory"`
+}
+
+type ShipOrderOutput struct {
+	OrderID            int64 `json:"orderId"`
+	ProductID          int64 `json:"productId"`
+	Status             int   `json:"status"`
 	ShippedQuantity    int   `json:"shippedQuantity"`
 	RemainingInventory int   `json:"remainingInventory"`
 }
@@ -148,6 +181,52 @@ func (s *Service) ListBuyerOrders(ctx context.Context, page, pageSize int, statu
 	return outputs, nil
 }
 
+func (s *Service) ListSellerOrders(ctx context.Context, input SellerOrderListInput) ([]SellerOrderOutput, error) {
+	user, err := currentUser(ctx, auth.RoleSeller)
+	if err != nil {
+		return nil, err
+	}
+	productNamePrefix := strings.TrimSpace(input.ProductNamePrefix)
+	if input.Page <= 0 || input.PageSize <= 0 || input.PageSize > 100 {
+		return nil, ErrInvalidArgument
+	}
+	if input.ProductID != nil && *input.ProductID <= 0 {
+		return nil, ErrInvalidArgument
+	}
+	if input.ProductID == nil && productNamePrefix == "" {
+		return nil, ErrInvalidArgument
+	}
+	items, err := s.repo.ListSellerOrders(ctx, repository.SellerOrderFilter{
+		SellerID:          user.ID,
+		ProductID:         input.ProductID,
+		ProductNamePrefix: productNamePrefix,
+		Limit:             input.PageSize,
+		Offset:            (input.Page - 1) * input.PageSize,
+	})
+	if err != nil {
+		return nil, err
+	}
+	outputs := make([]SellerOrderOutput, 0, len(items))
+	for _, item := range items {
+		outputs = append(outputs, SellerOrderOutput{
+			OrderID:             item.ID,
+			BuyerID:             item.BuyerID,
+			ProductID:           item.ProductID,
+			ProductNameSnapshot: item.ProductNameSnapshot,
+			Quantity:            item.Quantity,
+			TotalAmountCent:     item.TotalAmountCent,
+			RefundAmountCent:    item.RefundAmountCent,
+			Status:              item.Status,
+			StatusName:          orderdomain.StatusName(item.Status),
+			CreatedAt:           item.CreatedAt.Format("2006-01-02 15:04:05"),
+			ShippedAt:           formatNullTime(item.ShippedAt),
+			ReceivedAt:          formatNullTime(item.ReceivedAt),
+			RefundedAt:          formatNullTime(item.RefundedAt),
+		})
+	}
+	return outputs, nil
+}
+
 func (s *Service) RefundOrder(ctx context.Context, orderID int64, idempotencyKey string) (RefundOutput, error) {
 	user, err := currentUser(ctx, auth.RoleBuyer)
 	if err != nil {
@@ -190,6 +269,36 @@ func (s *Service) ReceiveOrder(ctx context.Context, orderID int64) error {
 	return err
 }
 
+func (s *Service) ShipSellerOrder(ctx context.Context, orderID int64) (ShipOrderOutput, error) {
+	user, err := currentUser(ctx, auth.RoleSeller)
+	if err != nil {
+		return ShipOrderOutput{}, err
+	}
+	if orderID <= 0 {
+		return ShipOrderOutput{}, ErrInvalidArgument
+	}
+	productID, quantity, remaining, err := s.repo.ShipSellerOrder(ctx, user.ID, orderID)
+	if errors.Is(err, repository.ErrInventoryNotEnough) {
+		return ShipOrderOutput{}, ErrInventoryNotEnough
+	}
+	if errors.Is(err, repository.ErrOrderStatusInvalid) {
+		return ShipOrderOutput{}, ErrOrderStatusInvalid
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return ShipOrderOutput{}, ErrOrderNotFound
+	}
+	if err != nil {
+		return ShipOrderOutput{}, err
+	}
+	return ShipOrderOutput{
+		OrderID:            orderID,
+		ProductID:          productID,
+		Status:             orderdomain.StatusShipping,
+		ShippedQuantity:    quantity,
+		RemainingInventory: remaining,
+	}, nil
+}
+
 func (s *Service) ShipProductOrders(ctx context.Context, productID int64) (ShipOutput, error) {
 	user, err := currentUser(ctx, auth.RoleSeller)
 	if err != nil {
@@ -224,4 +333,11 @@ func validOrderStatus(status int) bool {
 		status == orderdomain.StatusShipping ||
 		status == orderdomain.StatusReceived ||
 		status == orderdomain.StatusRefunded
+}
+
+func formatNullTime(value sql.NullTime) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.Time.Format("2006-01-02 15:04:05")
 }

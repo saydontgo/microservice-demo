@@ -30,6 +30,9 @@ const state = {
   buyerProducts: [],
   buyerOrders: [],
   sellerProducts: [],
+  sellerOrders: [],
+  sellerOrderProductId: "",
+  sellerOrderProductNamePrefix: "",
   trendPoints: [],
   trendHoverIndex: -1,
   trendStartDate: "",
@@ -187,6 +190,31 @@ function validateSellerProductFilter(params = {}) {
     throw new Error("开始日期不能晚于结束日期");
   }
   return params;
+}
+
+async function refreshSellerOrders(params = {}) {
+  const productId = params.productId ?? state.sellerOrderProductId;
+  const productNamePrefix = params.productNamePrefix ?? state.sellerOrderProductNamePrefix;
+  const filter = validateSellerOrderFilter({
+    productId,
+    productNamePrefix,
+  });
+  state.sellerOrderProductId = filter.productId;
+  state.sellerOrderProductNamePrefix = filter.productNamePrefix;
+  const data = await apiFetch(`/api/seller/orders${qs({ ...filter, page: 1, pageSize: 50 })}`);
+  state.sellerOrders = data.items || [];
+}
+
+function validateSellerOrderFilter(params = {}) {
+  const productId = String(params.productId || "").trim();
+  const productNamePrefix = String(params.productNamePrefix || "").trim();
+  if (!productId && !productNamePrefix) {
+    throw new Error("请输入商品 ID 或商品名前缀");
+  }
+  if (productId && (!Number.isInteger(Number(productId)) || Number(productId) <= 0)) {
+    throw new Error("商品 ID 不合法");
+  }
+  return { productId, productNamePrefix };
 }
 
 async function refreshTrend(input = {}) {
@@ -361,6 +389,7 @@ function renderSellerTabs() {
   return `
     <nav class="tabs">
       <button data-action="seller-tab" data-tab="products" class="${state.sellerTab === "products" ? "active" : ""}">商品管理</button>
+      <button data-action="seller-tab" data-tab="orders" class="${state.sellerTab === "orders" ? "active" : ""}">订单查询</button>
       <button data-action="seller-tab" data-tab="settings" class="${state.sellerTab === "settings" ? "active" : ""}">设置</button>
     </nav>
   `;
@@ -373,6 +402,7 @@ function renderBuyerContent() {
 }
 
 function renderSellerContent() {
+  if (state.sellerTab === "orders") return renderSellerOrders();
   if (state.sellerTab === "settings") return renderSellerSettings();
   return renderSellerProducts();
 }
@@ -579,9 +609,59 @@ function renderSellerProductRow(item) {
       <td>
         <div class="row-actions">
           <button class="ghost" data-action="edit-product" data-product-id="${item.productId}">编辑</button>
+          <button class="ghost" data-action="view-product-orders" data-product-id="${item.productId}">查订单</button>
           <button class="secondary" data-action="add-inventory" data-product-id="${item.productId}">补库存</button>
           <button class="ghost" data-action="ship-product" data-product-id="${item.productId}">一键发货</button>
           ${item.status === 1 ? `<button class="danger" data-action="delist-product" data-product-id="${item.productId}">下架</button>` : ""}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderSellerOrders() {
+  return `
+    <div class="card">
+      <div class="section-title">
+        <div><h2>订单查询</h2><span class="subtle">输入商品 ID 或商品名前缀，查看该商品订单</span></div>
+      </div>
+      <form class="toolbar" data-form="seller-search-orders">
+        <div class="field"><label>商品 ID</label><input name="productId" type="number" min="1" value="${htmlEscape(state.sellerOrderProductId)}" placeholder="3001" /></div>
+        <div class="field"><label>商品名前缀</label><input name="productNamePrefix" value="${htmlEscape(state.sellerOrderProductNamePrefix)}" placeholder="phone" /></div>
+        <button class="primary" type="submit">查询订单</button>
+      </form>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="orders-table">
+          <thead><tr><th>订单</th><th>商品</th><th>买家</th><th>数量</th><th>金额</th><th>退款金额</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
+          <tbody>${state.sellerOrders.map(renderSellerOrderRow).join("") || emptyRow(9, "暂无订单，请输入商品 ID 或商品名前缀查询")}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderSellerOrderRow(item) {
+  const timeline = [
+    ["创建", item.createdAt],
+    ["发货", item.shippedAt],
+    ["收货", item.receivedAt],
+    ["退款", item.refundedAt],
+  ].filter(([, value]) => value).map(([label, value]) => `<span>${label} ${htmlEscape(value)}</span>`).join("<br>");
+  return `
+    <tr>
+      <td><span class="copyable" data-copy="${item.orderId}">#${item.orderId}</span></td>
+      <td>${htmlEscape(item.productNameSnapshot)}<br><span class="copyable" data-copy="${item.productId}">商品 ID ${item.productId}</span></td>
+      <td><span class="copyable" data-copy="${item.buyerId}">买家 ID ${item.buyerId}</span></td>
+      <td>${item.quantity}</td>
+      <td>${money(item.totalAmountCent)}</td>
+      <td>${money(item.refundAmountCent)}</td>
+      <td>${statusBadge(item.status, ORDER_STATUS[item.status])}</td>
+      <td>${timeline || "-"}</td>
+      <td>
+        <div class="row-actions">
+          ${item.status === 1 ? `<button class="secondary" data-action="ship-order" data-order-id="${item.orderId}">发货</button>` : `<span class="subtle">无可用操作</span>`}
         </div>
       </td>
     </tr>
@@ -834,6 +914,7 @@ document.addEventListener("submit", (event) => {
     if (type === "buyer-recharge") await submitRecharge(data);
     if (type === "seller-create-product") await submitCreateProduct(data);
     if (type === "seller-search-products") await refreshSellerProducts(data);
+    if (type === "seller-search-orders") await refreshSellerOrders(data);
     if (type === "seller-trend") await refreshTrend({ startDate: data.startDate, endDate: data.endDate });
     if (type === "seller-profile") await submitSellerProfile(data);
   });
@@ -868,10 +949,15 @@ document.addEventListener("click", (event) => {
     if (action === "logout") await logout();
     if (action === "refund-order") await mutateOrder(`/api/buyer/orders/${target.dataset.orderId}/refund`, "refund");
     if (action === "receive-order") await mutateOrder(`/api/buyer/orders/${target.dataset.orderId}/receive`);
+    if (action === "ship-order") await shipSellerOrder(target.dataset.orderId);
     if (action === "add-inventory") await addInventory(target.dataset.productId);
     if (action === "ship-product") await shipProduct(target.dataset.productId);
     if (action === "delist-product") await delistProduct(target.dataset.productId);
     if (action === "edit-product") await editProduct(target.dataset.productId);
+    if (action === "view-product-orders") {
+      state.sellerTab = "orders";
+      await refreshSellerOrders({ productId: target.dataset.productId, productNamePrefix: "" });
+    }
   });
 });
 
@@ -1016,6 +1102,12 @@ async function shipProduct(productId) {
   await apiFetch(`/api/seller/products/${productId}/ship-all`, { method: "POST" });
   await refreshSellerProducts();
   showToast("一键发货完成");
+}
+
+async function shipSellerOrder(orderId) {
+  await apiFetch(`/api/seller/orders/${orderId}/ship`, { method: "POST" });
+  await Promise.all([refreshSellerOrders(), refreshSellerProducts()]);
+  showToast("订单已发货");
 }
 
 async function delistProduct(productId) {

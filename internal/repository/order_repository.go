@@ -33,6 +33,29 @@ type Order struct {
 	ShippedAt           sql.NullTime
 }
 
+type SellerOrderFilter struct {
+	SellerID          int64
+	ProductID         *int64
+	ProductNamePrefix string
+	Limit             int
+	Offset            int
+}
+
+type SellerOrder struct {
+	ID                  int64
+	BuyerID             int64
+	ProductID           int64
+	ProductNameSnapshot string
+	Quantity            int
+	TotalAmountCent     int64
+	RefundAmountCent    int64
+	Status              int
+	CreatedAt           time.Time
+	ShippedAt           sql.NullTime
+	ReceivedAt          sql.NullTime
+	RefundedAt          sql.NullTime
+}
+
 func NewOrderRepository(db *sql.DB) *OrderRepository {
 	return &OrderRepository{db: db}
 }
@@ -194,6 +217,59 @@ func (r *OrderRepository) queryBuyerOrders(ctx context.Context, query string, ar
 	for rows.Next() {
 		var item Order
 		if err := rows.Scan(&item.ID, &item.ProductID, &item.ProductNameSnapshot, &item.Quantity, &item.TotalAmountCent, &item.RefundAmountCent, &item.Status, &item.CreatedAt, &item.ShippedAt); err != nil {
+			return nil, err
+		}
+		orders = append(orders, item)
+	}
+	return orders, rows.Err()
+}
+
+func (r *OrderRepository) ListSellerOrders(ctx context.Context, filter SellerOrderFilter) ([]SellerOrder, error) {
+	var query strings.Builder
+	query.WriteString(`
+SELECT o.id, o.buyer_id, o.product_id, o.product_name_snapshot, o.quantity,
+       o.total_amount_cent, o.refund_amount_cent, o.status,
+       o.created_at, o.shipped_at, o.received_at, o.refunded_at
+FROM orders o
+JOIN products p ON p.id = o.product_id AND p.seller_id = o.seller_id
+WHERE o.seller_id = ?`)
+	args := []any{filter.SellerID}
+	if filter.ProductID != nil {
+		query.WriteString(" AND o.product_id = ?")
+		args = append(args, *filter.ProductID)
+	}
+	if filter.ProductNamePrefix != "" {
+		query.WriteString(" AND (p.product_name LIKE CONCAT(?, '%') OR o.product_name_snapshot LIKE CONCAT(?, '%'))")
+		args = append(args, filter.ProductNamePrefix, filter.ProductNamePrefix)
+	}
+	query.WriteString(`
+ORDER BY o.created_at DESC
+LIMIT ? OFFSET ?`)
+	args = append(args, filter.Limit, filter.Offset)
+
+	rows, err := r.db.QueryContext(ctx, query.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	orders := make([]SellerOrder, 0)
+	for rows.Next() {
+		var item SellerOrder
+		if err := rows.Scan(
+			&item.ID,
+			&item.BuyerID,
+			&item.ProductID,
+			&item.ProductNameSnapshot,
+			&item.Quantity,
+			&item.TotalAmountCent,
+			&item.RefundAmountCent,
+			&item.Status,
+			&item.CreatedAt,
+			&item.ShippedAt,
+			&item.ReceivedAt,
+			&item.RefundedAt,
+		); err != nil {
 			return nil, err
 		}
 		orders = append(orders, item)
@@ -413,6 +489,61 @@ WHERE id = ?`
 		return err
 	}
 	return tx.Commit()
+}
+
+func (r *OrderRepository) ShipSellerOrder(ctx context.Context, sellerID, orderID int64) (int64, int, int, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer tx.Rollback()
+
+	var productID int64
+	var quantity int
+	var status int
+	const orderQuery = `
+SELECT product_id, quantity, status
+FROM orders
+WHERE id = ? AND seller_id = ?
+FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, orderQuery, orderID, sellerID).Scan(&productID, &quantity, &status); err != nil {
+		return 0, 0, 0, err
+	}
+	if status != orderdomain.StatusPlacedUnshipped {
+		return 0, 0, 0, ErrOrderStatusInvalid
+	}
+
+	var available int
+	var reserved int
+	if err := tx.QueryRowContext(ctx, `SELECT available_quantity, reserved_quantity FROM product_inventory WHERE product_id = ? FOR UPDATE`, productID).Scan(&available, &reserved); err != nil {
+		return 0, 0, 0, err
+	}
+	useReserved := quantity
+	if reserved < useReserved {
+		useReserved = reserved
+	}
+	needAvailable := quantity - useReserved
+	if available < needAvailable {
+		return productID, quantity, available, ErrInventoryNotEnough
+	}
+
+	const updateInventory = `
+UPDATE product_inventory
+SET available_quantity = available_quantity - ?,
+    reserved_quantity = reserved_quantity - ?,
+    shipped_quantity = shipped_quantity + ?
+WHERE product_id = ?`
+	if _, err := tx.ExecContext(ctx, updateInventory, needAvailable, useReserved, quantity, productID); err != nil {
+		return 0, 0, 0, err
+	}
+	const updateOrder = `
+UPDATE orders
+SET status = ?, shipped_at = CURRENT_TIMESTAMP(3)
+WHERE id = ? AND seller_id = ?`
+	if _, err := tx.ExecContext(ctx, updateOrder, orderdomain.StatusShipping, orderID, sellerID); err != nil {
+		return 0, 0, 0, err
+	}
+	return productID, quantity, available - needAvailable, tx.Commit()
 }
 
 func (r *OrderRepository) ShipProductOrders(ctx context.Context, sellerID, productID int64) (int, int, int, error) {
